@@ -1,0 +1,2491 @@
+---
+title: "Data Visualization: Part 2"
+author: "Adapted from Claus Wilke"
+date: "11/17/2021"
+output:
+  bookdown::html_document2:
+    code_folding: hide
+    toc: true
+    toc_float: true
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r setup, include=FALSE}
+options(digits = 3)
+knitr::opts_chunk$set(
+  echo = TRUE,
+  message = FALSE,
+  warning = FALSE,
+  cache = FALSE,
+  #dpi = 105, # not sure why, but need to divide this by 2 to get 210 at 6in, which is 300 at 4.2in
+  fig.align = 'left',
+  fig.width = 6,
+  fig.asp = 0.618,  # 1 / phi
+  fig.show = "hold"
+)
+
+options(dplyr.print_min = 6, dplyr.print_max = 6)
+
+main_size = 14 / 2.845276
+small_rel <- 12/14
+small_size <- small_rel * main_size
+```
+
+Code for figures from Claus Wilke's *Fundamentals of Data Visaulization* ([book](https://clauswilke.com/dataviz/) \| [source code](https://github.com/clauswilke/dataviz)).
+
+First, install (if needed) and then load the following packages. RStudio should prompt you to install the ones you need, but if not, run the installation code for the packages you do not have installed.
+```{r}
+library(tidyverse)
+#install.packages("devtools")
+library(devtools)
+
+#install.packages("ggrepel")
+library(ggrepel)
+
+#install.packages("bookdown")
+library(bookdown)
+
+#install.packages("stringr")
+library(stringr)
+
+#install.packages("emmeans")
+library(emmeans)
+
+#install.packages("broom")
+library(broom)
+
+#install.packages("forcats")
+library(forcats)
+
+#install.packages("purrr")
+library(purrr)
+
+#devtools::install_github("wilkelab/ungeviz")
+library(ungeviz)
+
+#install.packages("tidybayes")
+library(tidybayes)
+
+#install.packages("mgcv")
+library(mgcv)
+
+#install.packages("treemapify")
+library(treemapify)
+
+#install.packages("cowplot")
+# or
+#devtools::install_github("wilkelab/cowplot")
+library(cowplot)
+
+#install.packages("ggridges")
+# or
+#devtools::install_github("wilkelab/ggridges")
+library(ggridges)
+
+#install.packages("lubridate")
+library(lubridate)
+
+#devtools::install_github("thomasp85/ggforce", force = TRUE)
+#devtools::install_github("thomasp85/patchwork")
+library(ggforce)
+library(patchwork)
+
+#install.packages("colorspace")
+library(colorspace)
+
+#install.packages("gapminder")
+library(gapminder)
+
+#devtools::install_github("clauswilke/colorblindr")
+library(colorblindr)
+#https://rdrr.io/github/clauswilke/dviz.supp/
+#devtools::install_github("clauswilke/dviz.supp")
+library(dviz.supp)
+```
+
+## Uncertainty
+
+(ref:probability-waffle) Visualizing probability as frequency. There are 100 squares in each grid, and each square represents either success of failure in some random trial. A 1% chance of success corresponds to one dark and 99 light squares, a 10% chance of success corresponds to ten dark and 90 light squares, and a 40% chance of success corresponds to 40 dark and 60 light squares. By randomly placing the dark squares among the light squares, we can create a visual impression of randomness that emphasizes the uncertainty of the outcome of a single trial.
+
+```{r probability-waffle, fig.width = 5*6/4.2, fig.asp = 1.2/3, fig.cap = '(ref:probability-waffle)'}
+g <- expand.grid(x = 1:10, y = 1:10)
+set.seed(84524)
+data <- data.frame(ratio = c(0.01, 0.1, 0.4)) %>%
+  mutate(
+    out = purrr::map(
+      ratio,
+      ~g %>% mutate(
+        value = {
+          n <- n()
+          i <- round(n*.x)
+          sample(c(rep("S", i), rep("F", n - i)), n)
+        }
+      )
+    )
+  ) %>%
+  unnest() %>%
+  mutate(
+    label = paste0(round(100*ratio), "% chance")
+  )
+ggplot(data, aes(x, y, fill = value)) +
+  geom_tile(color = "white", size = 1) +
+  coord_fixed(expand = FALSE, clip = "off") +
+  scale_x_continuous(name = NULL, breaks = NULL) +
+  scale_y_continuous(name = NULL, breaks = NULL) +
+  scale_fill_manual(
+    name = NULL,
+    breaks = c("S", "F"),
+    labels = c("success   ", "failure"),
+    values = c(
+      "S" = desaturate(darken("#0072B2", .4), .5),
+      "F" = desaturate(lighten("#0072B2", .7), .5)
+    ),
+    guide = guide_legend(override.aes = list(size = 0))
+  ) +
+  facet_wrap(~label) +
+  theme_dviz_grid() +
+  theme(
+    panel.spacing = unit(12, "pt"),
+    legend.position = "bottom",
+    legend.direction = "horizontal",
+    legend.justification = "right",
+    legend.box.spacing = unit(6, "pt"),
+    legend.spacing.x = unit(3, "pt"),
+    legend.key.size = unit(10, "pt"),
+    plot.margin = margin(0, 0, 3.5, 0) # crop plot a little more tightly
+  )
+```
+
+(ref:election-prediction) Hypothetical prediction of an election outcome. The blue party is predicted to win over the yellow party by approximately one percentage point (labeled "best estimate"), but that prediction has a margin of error (here drawn so it covers 95% of the likely outcomes, 1.76 percentage points in either direction from the best estimate). The area shaded in blue, corresponding to 87.1% of the total, represents all outcomes under which blue would win. Likewise, the area shaded in yellow, corresponding to 12.9% of the total, represents all outcomes under which yellow would win. In this example, blue has an 87% chance of winning the election.
+
+```{r election-prediction, fig.asp = 0.5, fig.cap = '(ref:election-prediction)'}
+x <- c(seq(-2.5, 0, length.out = 50), seq(0.00001, 5, length.out = 100))
+mu <- 1.02
+sd <- .9
+df_norm <- data.frame(
+  x,
+  y = dnorm(x, mu, sd),
+  type = ifelse(x <= 0, "A", "B")
+)
+ci_x <- c(qnorm(.025, mu, sd), qnorm(0.975, mu, sd))
+ci_y <- dnorm(ci_x, mu, sd)
+df_annot <- data.frame(
+  x = c(mu + 0.05, mu + 0.1, mu + 2.3*sd, mu - 2.5*sd),
+  y = c(dnorm(mu, mu, sd) + 0.04, ci_y[1] + 0.01, 3*ci_y[1], 3*ci_y[1]),
+  hjust = c(0, 0, 0.5, 0.5),
+  vjust = c(1, 0, 0.5, 0.5),
+  label = c("best estimate", "margin of error", "blue wins", "yellow wins")
+)
+ggplot(df_norm, aes(x, y)) +
+  geom_area(aes(fill = type)) +
+  geom_vline(xintercept = 0, linetype = 2, color = "gray50") +
+  geom_line() +
+  geom_segment(
+    data = data.frame(x = 1),
+    x = ci_x[1], xend = ci_x[2], y = ci_y[1], yend = ci_y[2],
+    arrow = arrow(angle = 15, length = grid::unit(9, "pt"), ends = "both", type = "closed"),
+    inherit.aes = FALSE
+  ) +
+  geom_segment(
+    data = data.frame(x = 1),
+    x = mu, xend = mu, y = 0, yend = dnorm(mu, mu, sd) + 0.04,
+    inherit.aes = FALSE
+  ) +
+  geom_text(
+    data = df_annot,
+    aes(x, y, label = label, hjust = hjust, vjust = vjust),
+    family = dviz_font_family,
+    size = 12/.pt
+  ) +
+  scale_x_continuous(
+    name = "percentage point advantage for blue",
+    labels = scales::percent_format(accuracy = 0.1, scale = 1)
+  ) +
+  scale_y_continuous(
+    name = NULL,
+    breaks = NULL,
+    expand = c(0, 0),
+    limits = c(0, dnorm(mu, mu, sd) + 0.045)
+  ) +
+  scale_fill_manual(
+    values = c(A = "#f8f1a9", B = "#b1daf4"),
+    guide = "none"
+  ) +
+  theme_dviz_open()
+```
+
+(ref:election-quantile-dot) Quantile dotplot representations of the election outcome distribution of Figure \@ref(fig:election-prediction). (a) The smooth distribution is approximated with 50 dots representing a 2% chance each. The six yellow dots thus correspond to a 12% chance, reasonably close to the true value of 12.9%. (b) The smooth distribution is approximated with 10 dots representing a 10% chance each. The one yellow dot thus corresponds to a 10% chance, still close to the true value. Quantile dot plots with a smaller number of dots tend to be easier to read, so in this example, the 10-dot version might be preferable to the 50-dot version.
+
+```{r election-quantile-dot, fig.asp = 0.72, fig.cap = '(ref:election-quantile-dot)'}
+mu <- 1.02
+sd <- 0.9
+binwidth <- 0.31
+binwidth <- 0.29
+df_q <- data.frame(x = qnorm(ppoints(50), mu, sd)) %>%
+  mutate(type = ifelse(x <= 0, "A", "B"))
+p1 <- ggplot(df_q, aes(x, fill = type)) +
+  geom_vline(xintercept = 0, linetype = 2, color = "gray50") +
+  geom_line(data = df_norm, aes(x, 1.92*y)) + # factor 1.92 manually determined
+  geom_dotplot(binwidth = binwidth) +
+  scale_x_continuous(
+    name = NULL, #"percent point advantage for blue",
+    labels = scales::percent_format(accuracy = 0.1, scale = 1)
+  ) +
+  scale_y_continuous(
+    name = NULL,
+    breaks = NULL,
+    expand = c(0, 0),
+    limits = c(0, 0.9)
+  ) +
+  scale_fill_manual(
+    values = c(A = "#f8f1a9", B = "#b1daf4"),
+    guide = "none"
+  ) +
+  theme_dviz_open()
+binwidth <- 0.31*2.1
+df_q <- data.frame(x = qnorm(ppoints(10), mu, sd)) %>%
+  mutate(type = ifelse(x <= 0, "A", "B"))
+p2 <- ggplot(df_q, aes(x, fill = type)) +
+  geom_vline(xintercept = 0, linetype = 2, color = "gray50") +
+  geom_line(data = df_norm, aes(x, 1.92*y)) + # factor 1.92 manually determined
+  geom_dotplot(binwidth = binwidth) +
+  scale_x_continuous(
+    name = "percentage point advantage for blue",
+    labels = scales::percent_format(accuracy = 0.1, scale = 1)
+  ) +
+  scale_y_continuous(
+    name = NULL,
+    breaks = NULL,
+    expand = c(0, 0),
+    limits = c(0, 0.9)
+  ) +
+  scale_fill_manual(
+    values = c(A = "#f8f1a9", B = "#b1daf4"),
+    guide = "none"
+  ) +
+  theme_dviz_open()
+plot_grid(p1, p2, align = 'h', labels = "auto", ncol = 1)
+```
+
+### Uncertainty of point estimates
+
+(ref:sampling-schematic) Key concepts of statistical sampling. The variable of interest that we are studying has some true distribution in the population, with a true population mean and standard deviation. Any finite sample of that variable will have a sample mean and standard deviation that differ from the population parameters. If we sampled repeatedly and calculated a mean each time, then the resulting means would be distributed according to the sampling distribution of the mean. The standard error provides information about the width of the sampling distribution, which informs us about how precisely we are estimating the parameter of interest (here, the population mean).
+
+```{r sampling-schematic, fig.asp = 3/4, fig.cap = '(ref:sampling-schematic)'}
+fill_color <- lighten("#56B4E9", 0.2)
+fill_color <- "lightblue"
+set.seed(452061)
+empty_theme <- theme_dviz_open(12, rel_small = 1, rel_large = 1) +
+  theme(
+    axis.line = element_blank(),
+    axis.text = element_blank(),
+    axis.ticks = element_blank(),
+    axis.ticks.length = grid::unit(0, "pt")
+  )
+x <- c(seq(-4, 4, length.out = 200))
+df_norm <- data.frame(
+  x,
+  y = dnorm(x)
+)
+sd_x <- c(-1, 1)
+sd_y <- dnorm(sd_x)
+df_annot <- data.frame(
+  x = c(0.05, sd_x[2] + 0.04, -Inf),
+  y = c(dnorm(0) * 0.4, sd_y[2] * 1.01, Inf), #sd_y[1] * 1.1
+  hjust = c(0, 0, 0),
+  vjust = c(1, 0.5, 1),
+  label = c("mean", "standard deviation", "population distribution")
+)
+p1 <- ggplot(df_norm, aes(x, y)) +
+  geom_area(fill = fill_color) +
+  geom_segment( # standard deviation
+    data = data.frame(x = 1),
+    x = 0, xend = sd_x[2], y = sd_y[1], yend = sd_y[2],
+    arrow = arrow(angle = 90, length = grid::unit(3, "pt"), ends = "both", type = "closed"),
+    inherit.aes = FALSE
+  ) +
+  geom_segment( # vertical line representing mean
+    data = data.frame(x = 1),
+    x = 0, xend = 0, y = 0, yend = dnorm(0),
+    linetype = 2,
+    inherit.aes = FALSE
+  ) +
+  geom_text(
+    data = df_annot,
+    aes(x, y, label = label, hjust = hjust, vjust = vjust),
+    family = dviz_font_family,
+    size = c(12, 12, 14)/.pt
+  ) +
+  scale_x_continuous(
+    limits = c(-4, 4), expand = c(0, 0),
+    breaks = 0, # workaround to fix missing axis line
+    name = "variable of interest"
+  ) +
+  scale_y_continuous(breaks = NULL, name = NULL, expand = expansion(mult = c(0, 0.1))) +
+  empty_theme +
+  theme(axis.line.x = element_line(), axis.title.x = element_text(hjust = 1))
+n <- 15
+df_sample <- data.frame(
+  x = rnorm(n),
+  y = 0
+)
+df_annot2 <- data.frame(
+  x = c(mean(df_sample$x) + 0.05, sort(df_sample$x)[2],
+        mean(df_sample$x) + sd(df_sample$x) + 0.05, -Inf),
+  y = c(-0.15, 0.12, .13 + 0.01, Inf),
+  hjust = c(0, 0.3, 0, 0),
+  vjust = c(0.5, 0.5, 0.5, 1),
+  label = c("sample mean", "observations", "sample standard deviation", "sample")
+)
+p2 <- ggplot(df_sample, aes(x, y)) +
+  geom_point(
+    size = 3, fill = fill_color, shape = 21, stroke = 0.5,
+    position = position_jitter(width = 0, height = 0.01, seed = 127)
+  ) +
+  geom_segment( # vertical bar representing mean
+    data = data.frame(x = 1),
+    aes(x = mean(df_sample$x), xend = mean(df_sample$x), y = -.2, yend = .2),
+    size = 1.5,
+    color = "#D55E00",
+    inherit.aes = FALSE
+  ) +
+  geom_segment( # horizontal bar representing sd
+    data = data.frame(x = 1),
+    x = mean(df_sample$x), xend = mean(df_sample$x) + sd(df_sample$x), y = .13, yend = .13,
+    arrow = arrow(angle = 90, length = grid::unit(3, "pt"), ends = "both", type = "closed"),
+    inherit.aes = FALSE
+  ) +
+  geom_text(
+    data = df_annot2,
+    aes(x, y, label = label, hjust = hjust, vjust = vjust),
+    family = dviz_font_family,
+    size = c(12, 12, 12, 14)/.pt
+  ) +
+  scale_x_continuous(limits = c(-4, 4), expand = c(0, 0), breaks = NULL, name = NULL) +
+  scale_y_continuous(expand = c(0.1, 0), breaks = NULL, name = NULL) +
+  empty_theme
+df_samplingdist <- data.frame(
+  x,
+  y = dnorm(x, 0, 1/sqrt(n))
+)
+se_x <- c(-1/sqrt(n), 1/sqrt(n))
+se_y <- dnorm(se_x, 0, 1/sqrt(n))
+df_annot3 <- data.frame(
+  x = c(0.05, se_x[2] + 0.04, -Inf),
+  y = c(dnorm(0, 0, 1/sqrt(n)) * 0.4, se_y[2] * 1.01, Inf),
+  hjust = c(0, 0, 0),
+  vjust = c(1, 0.5, 1),
+  label = c("mean of the sample means", "standard error", "sampling distribution of the mean")
+)
+p3 <- ggplot(df_samplingdist, aes(x, y)) +
+  geom_area(fill = fill_color) +
+  geom_segment( # standard error
+    data = data.frame(x = 1),
+    x = 0, xend = se_x[2], y = se_y[1], yend = se_y[2],
+    arrow = arrow(angle = 90, length = grid::unit(3, "pt"), ends = "both", type = "closed"),
+    inherit.aes = FALSE
+  ) +
+  geom_segment(
+    data = data.frame(x = 1),
+    x = 0, xend = 0, y = 0, yend = dnorm(0, 0, 1/sqrt(n)),
+    linetype = 2,
+    inherit.aes = FALSE
+  ) +
+  geom_text(
+    data = df_annot3,
+    aes(x, y, label = label, hjust = hjust, vjust = vjust),
+    family = dviz_font_family,
+    size = c(12, 12, 14)/.pt
+  ) +
+  scale_x_continuous(
+    limits = c(-4, 4), expand = c(0, 0),
+    breaks = 0, # workaround to fix missing axis line
+    name = "sample mean"
+  ) +
+  scale_y_continuous(breaks = NULL, name = NULL, expand = expand_scale(mult = c(0, 0.1))) +
+  empty_theme +
+  theme(axis.line.x = element_line(), axis.title.x = element_text(hjust = 1))
+plot_grid(
+  p1,
+  p2,
+  p3,
+  ncol = 1, rel_heights = c(1, .4, 1), align = 'v'
+)
+```
+
+(ref:cocoa-data-vs-CI) Relationship between sample, sample mean, standard deviation, standard error, and confidence intervals, in an example of chocolate bar ratings. The observations (shown as jittered green dots) that make up the sample represent expert ratings of 125 chocolate bars from manufacturers in Canada, rated on a scale from 1 (unpleasant) to 5 (elite). The large orange dot represents the mean of the ratings. Error bars indicate, from top to bottom, twice the standard deviation, twice the standard error (standard deviation of the mean), and 80%, 95%, and 99% confidence intervals of the mean. Data source: Brady Brelinski, Manhattan Chocolate Society
+
+```{r cocoa-data-vs-CI, fig.width = 5*6/4.2, fig.asp = 0.48, warning = FALSE, message = FALSE, fig.cap = '(ref:cocoa-data-vs-CI)'}
+# color for individual small data points
+point_color <- darken("#009E73", .3)
+cacao %>% 
+  filter(location == "Canada") -> cacao_single
+fit <- lm(rating ~ 1, data = cacao_single)
+CI_df <- data.frame(type = c(0.8, 0.95, 0.99)) %>%
+  mutate(df = map(type, ~tidy(emmeans(fit, ~ 1, options = list(level = .x))))) %>%
+  unnest() %>%
+  mutate(type = paste0(signif(100*type, 2), "% confidence interval"))
+CI_df <- rbind(
+  data.frame(
+    type = "standard error",
+    estimate = CI_df$estimate[1],
+    std.error = CI_df$std.error[1],
+    conf.low = CI_df$estimate[1] - CI_df$std.error[1],
+    conf.high = CI_df$estimate[1] + CI_df$std.error[1]
+  ))
+CI_df <- rbind(
+  CI_df %>% select(type, estimate, std.error, conf.low, conf.high),
+  data.frame(
+    type = "standard deviation",
+    estimate = mean(cacao_single$rating),
+    std.error = CI_df$std.error[1],
+    conf.low = mean(cacao_single$rating) - sd(cacao_single$rating),
+    conf.high = mean(cacao_single$rating) + sd(cacao_single$rating)
+  ),
+  data.frame(
+    type = "sample", estimate = mean(cacao_single$rating), std.error = NA,
+    conf.low = NA, conf.high = max(cacao_single$rating)
+  )
+)  %>%
+  mutate(
+    type = fct_relevel(factor(type), "sample", "standard deviation", "standard error"),
+    label = case_when(
+      type == "sample" ~ NA_character_,
+      type == "standard deviation" ~ "+/- standard deviation",
+      type == "standard error" ~ "+/- standard error",
+      TRUE ~ as.character(type) #paste0("mean +/- ", type)
+    )
+  )
+label_x <- filter(CI_df, type == "standard deviation")$conf.high + 0.04
+ggplot(CI_df, aes(estimate, type)) + 
+  geom_point(
+    data = cacao_single, aes(rating, "sample"), 
+    position = position_jitter(height = 0.6, width = 0.02, seed = 7843),
+    color = point_color,
+    size = 0.3
+  ) +
+  geom_errorbarh(aes(xmin = conf.low, xmax = conf.high), height = 0.2, na.rm = TRUE) +
+  geom_point(size = 2, color = "#D55E00") +
+  geom_label(
+    aes(label_x, label = label), hjust = 0, nudge_y = 0.01, na.rm = TRUE,
+    family = dviz_font_family,
+    size = 14/.pt,
+    label.size = 0
+  ) +
+  geom_label(
+    data = filter(CI_df, type == "sample"),
+    aes(conf.high + 0.06, label = type), hjust = 0, nudge_y = 0.01,
+    family = dviz_font_family,
+    size = 14/.pt,
+    label.size = 0
+  ) +
+  geom_text(
+    data = filter(CI_df, type == "sample"),
+    aes(estimate, label = "mean"), hjust = 0.2, vjust = 0, nudge_y = 0.2,
+    family = dviz_font_family,
+    size = 14/.pt
+  ) +
+  scale_x_continuous(
+    limits = c(1.95, 4.1),
+    expand = c(0, 0),
+    name = "chocolate flavor rating"
+  ) +
+  scale_y_discrete(
+    name = NULL,
+    limits = rev(levels(CI_df$type)),
+    expand = expand_scale(add = c(0.6, 0.8)),
+    breaks = NULL
+  ) +
+  coord_cartesian(clip = "off") +
+  theme_dviz_vgrid(14, rel_small = 1) +
+  theme(
+    plot.margin = margin(3, 82, 3, 1.5),
+    axis.line.x = element_line(),
+    axis.ticks.x = element_line(color = "black"),
+    axis.title.x = element_text(hjust = 1)
+  )
+```
+
+
+```{block type='rmdtip', echo=TRUE}
+Whenever you visualize uncertainty with error bars, you must specify what quantity and/or confidence level the error bars represent.
+```
+
+The standard error is approximately given by the sample standard deviation divided by the square root of the sample size, and confidence intervals are calculated by multiplying the standard error with small, constant values. For example, a 95% confidence interval extends approximately two times the standard error in either direction from the mean. Therefore, larger samples tend to have narrower standard errors and confidence intervals, even if their standard deviation is the same. We can see this effect when we compare ratings for chocolate bars from Canada to ones from Switzerland (Figure \@ref(fig:cocoa-CI-vs-n)). The mean rating and sample standard deviation are comparable between Canadian and Swiss chocolate bars, but we have ratings for 125 Canadian bars and only 38 Swiss bars, and consequently the confidence intervals around the mean are much wider in the case of Swiss bars.
+
+(ref:chocolate-ratings-contrasts) Mean chocolate flavor ratings for manufacturers from five different countries, relative to the mean rating of U.S. chocolate bars. Canadian chocolate bars are significantly higher rated that U.S. bars. For the other four countries there is no significant difference in mean rating to the U.S. at the 95% confidence level. Confidence levels have been adjusted for multiple comparisons using Dunnett's method. Data source: Brady Brelinski, Manhattan Chocolate Society
+
+```{r chocolate-ratings-contrasts, fig.width = 5*6/4.2, fig.asp = 0.5, fig.cap = '(ref:chocolate-ratings-contrasts)'}
+cacao_CA <- filter(cacao, location == "Canada")
+cacao_CH <- filter(cacao, location == "Switzerland")
+fit_CA <- lm(rating ~ 1, data = cacao_CA)
+fit_CH <- lm(rating ~ 1, data = cacao_CH)
+sd_df <- rbind(
+  data.frame(
+    level = NA,
+    estimate = mean(cacao_CA$rating),
+    conf.low = mean(cacao_CA$rating) - sd(cacao_CA$rating),
+    conf.high = mean(cacao_CA$rating) + sd(cacao_CA$rating),
+    type = "original data",
+    location = "Canada"
+  ),
+  data.frame(
+    level = NA,
+    estimate = mean(cacao_CH$rating),
+    conf.low = mean(cacao_CH$rating) - sd(cacao_CH$rating),
+    conf.high = mean(cacao_CH$rating) + sd(cacao_CH$rating),
+    type = "original data",
+    location = "Switzerland"
+  )
+)
+cacao_small <- 
+  cacao_small %>% 
+  mutate(location = fct_recode(location, US = "U.S.A.")) # change to O'Reilly style
+fit <- lm(rating ~ location, data = cacao_small)
+
+# need reference grid for contrasts
+fit_rg <- ref_grid(fit)
+contrasts_dunnettx <- data.frame(level = c(0.99, 0.95, 0.8)) %>%
+  mutate(
+    df = map(
+      level,
+      ~data.frame(confint(contrast(fit_rg, method = "trt.vs.ctrl1"), level = .x))
+    )
+  ) %>%
+  unnest() %>%
+  select(level, contrast, estimate, std.error = SE, conf.low = lower.CL, conf.high = upper.CL) %>%
+  mutate(
+    level = paste0(signif(100*level, 2), "%"),
+    contrast = stringr::str_extract(as.character(contrast), "[a-zA-Z]+")
+  )
+ggplot(contrasts_dunnettx, aes(x = estimate, y = reorder(contrast, estimate))) +
+  geom_vline(xintercept = 0, linetype = 2, color = "gray50") +
+  geom_errorbarh(
+    aes(xmin = conf.low, xmax = conf.high, color = level, size = level),
+    height = 0
+  ) +
+  geom_errorbarh(
+    aes(xmin = conf.low, xmax = conf.high, color = level),
+    height = 0.2
+  ) +
+  geom_point(data = filter(contrasts_dunnettx, level == "80%"), size = 2.5, color = "#D55E00") +
+  scale_x_continuous(
+    name = "difference in mean rating",
+    sec.axis = dup_axis(
+      name = NULL,
+      breaks = 0,
+      labels = "US mean rating"
+    )
+  ) +
+  scale_y_discrete(
+    name = NULL
+  ) +
+  scale_color_manual(
+    name = "confidence level",
+    values = c(
+     `80%` = desaturate(darken("#0072B2", .2), .3),
+     `95%` = desaturate(lighten("#0072B2", .2), .3),
+     `99%` = desaturate(lighten("#0072B2", .4), .3)
+    ),
+    guide = guide_legend(
+      direction = "horizontal",
+      title.position = "top",
+      label.position = "bottom"
+    )
+  ) +
+  scale_size_manual(
+    name = "confidence level",
+    values = c(
+     `80%` = 2.25,
+     `95%` = 1.5,
+     `99%` = 0.75
+    ),
+    guide = guide_legend(
+      direction = "horizontal",
+      title.position = "top",
+      label.position = "bottom"
+    )
+  ) +
+  coord_cartesian(clip = "off") +
+  theme_dviz_hgrid(14, rel_small = 1) +
+  theme(
+    axis.line.x = element_line(color = "black"),
+    axis.line.x.top = element_blank(),
+    axis.ticks.x = element_line(color = "black"),
+    axis.ticks.x.top = element_line(color = "gray50"),
+    #axis.title.x = element_text(hjust = 1),
+    legend.position = c(1, 0.02),
+    legend.justification = c(1, 0),
+    legend.key.height = grid::unit(7, "pt"),
+    legend.key.width = grid::unit(35, "pt"),
+    legend.spacing.x = grid::unit(7, "pt"),
+    legend.spacing.y = grid::unit(3.5, "pt"),
+    legend.box.background = element_rect(fill = "white", color = NA),
+    legend.box.spacing = grid::unit(0, "pt"),
+    legend.title.align = 0.5
+  )
+```
+
+(ref:confidence-visualizations) Mean chocolate flavor ratings for manufacturers from four different countries, relative to the mean rating of U.S. chocolate bars. Each panel uses a different approach to visualizing the same uncertainty information. (a) Graded error bars with cap. (b) Graded error bars without cap. (c) Single-interval error bars with cap. (d) Single-interval error bars without cap. (e) Confidence strips. (f) Confidence distributions.
+
+```{r confidence-visualizations, fig.width = 5.5*6/4.2, fig.asp = 0.75, fig.cap = '(ref:confidence-visualizations)'}
+cacao_smaller <- filter(cacao_small, location != "Switzerland")
+fit <- lm(rating ~ location, data = cacao_smaller)
+fit_rg <- ref_grid(fit)
+contrasts_dunnettx <- data.frame(level = c(0.99, 0.95, 0.8)) %>%
+  mutate(
+    df = map(
+      level,
+      ~data.frame(confint(contrast(fit_rg, method = "trt.vs.ctrl1"), level = .x))
+    )
+  ) %>%
+  unnest() %>%
+  select(level, contrast, estimate, std.error = SE, conf.low = lower.CL, conf.high = upper.CL) %>%
+  mutate(
+    level = paste0(signif(100*level, 2), "%"),
+    contrast = stringr::str_extract(as.character(contrast), "[a-zA-Z]+")
+  )
+p1 <- ggplot(contrasts_dunnettx, aes(x = estimate, y = reorder(contrast, estimate))) +
+  geom_vline(xintercept = 0, linetype = 2, color = "gray50") +
+  geom_errorbarh(
+    aes(xmin = conf.low, xmax = conf.high, color = level, size = level),
+    height = 0
+  ) +
+  geom_errorbarh(
+    aes(xmin = conf.low, xmax = conf.high, color = level),
+    height = 0.2
+  ) +
+  geom_point(data = filter(contrasts_dunnettx, level == "80%"), size = 2.5, color = "#D55E00") +
+  scale_x_continuous(
+    name = "difference in mean rating",
+    limits = c(-.65, .47),
+    expand = c(0, 0)
+  ) +
+  scale_y_discrete(name = NULL) +
+  scale_color_manual(
+    name = "confidence level",
+    values = c(
+     `80%` = desaturate(darken("#0072B2", .2), .3),
+     `95%` = desaturate(lighten("#0072B2", .2), .3),
+     `99%` = desaturate(lighten("#0072B2", .4), .3)
+    ),
+    guide = guide_legend(
+      direction = "horizontal",
+      title.position = "top",
+      label.position = "bottom"
+    )
+  ) +
+  scale_size_manual(
+    name = "confidence level",
+    values = c(
+     `80%` = 1.5,
+     `95%` = 1,
+     `99%` = 0.5
+    ),
+    guide = guide_legend(
+      direction = "horizontal",
+      title.position = "top",
+      label.position = "bottom"
+    )
+  ) +
+  coord_cartesian(clip = "off") +
+  theme_dviz_hgrid(12, rel_small = 1) +
+  theme(
+    axis.line.x = element_line(color = "black"),
+    axis.line.x.top = element_blank(),
+    axis.ticks.x = element_line(color = "black"),
+    axis.ticks.x.top = element_line(color = "gray50"),
+    #axis.title.x = element_text(hjust = 1),
+    legend.position = "none",
+    #legend.position = c(1, .01),
+    legend.justification = c(1, 0),
+    legend.key.height = grid::unit(6, "pt"),
+    legend.key.width = grid::unit(30, "pt"),
+    legend.spacing.x = grid::unit(6, "pt"),
+    legend.spacing.y = grid::unit(3, "pt"),
+    legend.box.background = element_rect(fill = "white", color = NA),
+    legend.box.spacing = grid::unit(0, "pt"),
+    legend.title.align = 0.5
+  )
+p2 <- ggplot(filter(contrasts_dunnettx, level == "95%"),
+             aes(x = estimate, y = reorder(contrast, estimate))) +
+  geom_vline(xintercept = 0, linetype = 2, color = "gray50") +
+  geom_errorbarh(
+    aes(xmin = conf.low, xmax = conf.high),
+    height = 0.2
+  ) +
+  geom_point(size = 2.5, color = "#D55E00") +
+  scale_x_continuous(
+    name = "difference in mean rating",
+    limits = c(-.65, .47),
+    expand = c(0, 0)
+  ) +
+  scale_y_discrete(name = NULL) +
+  coord_cartesian(clip = "off") +
+  theme_dviz_hgrid(12, rel_small = 1) +
+  theme(
+    axis.line.x = element_line(color = "black"),
+    axis.line.x.top = element_blank(),
+    axis.ticks.x = element_line(color = "black"),
+    axis.ticks.x.top = element_line(color = "gray50")
+  )
+p3 <- ggplot(contrasts_dunnettx, aes(x = estimate, y = reorder(contrast, estimate))) +
+  geom_vline(xintercept = 0, linetype = 2, color = "gray50") +
+  geom_errorbarh(
+    aes(xmin = conf.low, xmax = conf.high, color = level, size = level),
+    height = 0
+  ) +
+  geom_point(data = filter(contrasts_dunnettx, level == "80%"), size = 2.5, color = "#D55E00") +
+  scale_x_continuous(
+    name = "difference in mean rating",
+    limits = c(-.65, .47),
+    expand = c(0, 0)
+  ) +
+  scale_y_discrete(name = NULL) +
+  scale_color_manual(
+    name = "confidence level",
+    values = c(
+     `80%` = desaturate(darken("#0072B2", .2), .3),
+     `95%` = desaturate(lighten("#0072B2", .2), .3),
+     `99%` = desaturate(lighten("#0072B2", .4), .3)
+    ),
+    guide = guide_legend(
+      direction = "horizontal",
+      title.position = "top",
+      label.position = "bottom"
+    )
+  ) +
+  scale_size_manual(
+    name = "confidence level",
+    values = c(
+     `80%` = 1.5,
+     `95%` = 1,
+     `99%` = 0.5
+    ),
+    guide = guide_legend(
+      direction = "horizontal",
+      title.position = "top",
+      label.position = "bottom"
+    )
+  ) +
+  coord_cartesian(clip = "off") +
+  theme_dviz_hgrid(12, rel_small = 1) +
+  theme(
+    axis.line.x = element_line(color = "black"),
+    axis.line.x.top = element_blank(),
+    axis.ticks.x = element_line(color = "black"),
+    axis.ticks.x.top = element_line(color = "gray50"),
+    #axis.title.x = element_text(hjust = 1),
+    legend.position = "none",
+    #legend.position = c(1, .01),
+    legend.justification = c(1, 0),
+    legend.key.height = grid::unit(6, "pt"),
+    legend.key.width = grid::unit(24, "pt"),
+    legend.spacing.x = grid::unit(6, "pt"),
+    legend.spacing.y = grid::unit(3, "pt"),
+    legend.box.background = element_rect(fill = "white", color = NA),
+    legend.box.spacing = grid::unit(0, "pt"),
+    legend.title.align = 0.5
+  )
+p4 <- ggplot(filter(contrasts_dunnettx, level == "95%"),
+             aes(x = estimate, y = reorder(contrast, estimate))) +
+  geom_vline(xintercept = 0, linetype = 2, color = "gray50") +
+  geom_errorbarh(
+    aes(xmin = conf.low, xmax = conf.high),
+    height = 0
+  ) +
+  geom_point(size = 2.5, color = "#D55E00") +
+  scale_x_continuous(
+    name = "difference in mean rating",
+    limits = c(-.65, .47),
+    expand = c(0, 0)
+  ) +
+  scale_y_discrete(name = NULL) +
+  coord_cartesian(clip = "off") +
+  theme_dviz_hgrid(12, rel_small = 1) +
+  theme(
+    axis.line.x = element_line(color = "black"),
+    axis.line.x.top = element_blank(),
+    axis.ticks.x = element_line(color = "black"),
+    axis.ticks.x.top = element_line(color = "gray50")
+  )
+p5 <- ggplot(filter(contrasts_dunnettx, level == "95%"),
+             aes(x = estimate, y = reorder(contrast, estimate))) +
+  geom_vline(xintercept = 0, linetype = 2, color = "gray50") +
+  stat_confidence_density(
+    aes(moe = conf.high-estimate, fill = stat(ndensity)),
+    height = 0.7,
+    confidence = 0.95,
+    alpha = NA
+  ) +
+  geom_segment(
+    aes(
+      x = estimate, xend = estimate,
+      y = as.integer(reorder(contrast, estimate)) - 0.35,
+      yend = as.integer(reorder(contrast, estimate)) + 0.35
+    ),
+    size = 2, color = "#D55E00"
+  ) +
+  scale_fill_gradient(low = "#81A7D600", high = "#345A7FD0") +
+  scale_x_continuous(
+    name = "difference in mean rating",
+    limits = c(-.65, .47),
+    expand = c(0, 0)
+  ) +
+  scale_y_discrete(name = NULL) +
+  coord_cartesian(clip = "off") +
+  theme_dviz_hgrid(12, rel_small = 1) +
+  theme(
+    axis.line.x = element_line(color = "black"),
+    axis.line.x.top = element_blank(),
+    axis.ticks.x = element_line(color = "black"),
+    axis.ticks.x.top = element_line(color = "gray50")
+  )
+p6 <- ggplot(filter(contrasts_dunnettx, level == "95%"),
+             aes(x = estimate, y = reorder(contrast, estimate))) +
+  geom_vline(xintercept = 0, linetype = 2, color = "gray50") +
+  stat_confidence_density(
+    aes(moe = conf.high-estimate, height = stat(density)),
+    geom = "ridgeline",
+    confidence = 0.95,
+    scale = 0.2,
+    min_height = 0.001,
+    alpha = 0.7,
+    fill = "#81A7D6",
+    size = 0.4
+  ) +
+  geom_segment(
+    aes(
+      x = estimate, xend = estimate,
+      y = as.integer(reorder(contrast, estimate)) - 0.2,
+      yend = as.integer(reorder(contrast, estimate)) + 0.5
+    ),
+    size = 2, color = "#D55E00"
+  ) +
+  scale_fill_gradient(low = "#81A7D600", high = "#345A7FD0") +
+  scale_x_continuous(
+    name = "difference in mean rating",
+    limits = c(-.65, .47),
+    expand = c(0, 0)
+  ) +
+  scale_y_discrete(name = NULL) +
+  coord_cartesian(clip = "off") +
+  theme_dviz_hgrid(12, rel_small = 1) +
+  theme(
+    axis.line.x = element_line(color = "black"),
+    axis.line.x.top = element_blank(),
+    axis.ticks.x = element_line(color = "black"),
+    axis.ticks.x.top = element_line(color = "gray50"),
+    axis.text.y = element_text(vjust = 0)
+  )
+plot_grid(
+  p1, NULL, p3,
+  NULL, NULL, NULL,
+  p2, NULL, p4,
+  NULL, NULL, NULL,
+  p5, NULL, p6,
+  ncol = 3,
+  labels = c("a", "", "b", "", "", "", "c", "", "d", "", "", "", "e", "", "f"),
+  rel_widths = c(1, .02, 1),
+  rel_heights = c(1, .02, 1, .02, 1)
+)
+```
+
+### Uncertainty of curve fits
+
+(ref:blue-jays-male-conf-band) Head length versus body mass for male blue jays, as in Figure \@ref(fig:blue-jays-scatter-line). The straight blue line represents the best linear fit to the data, and the gray band around the line shows the uncertainty in the linear fit. The gray band represents a 95% confidence level. Data source: Keith Tarvin, Oberlin College
+
+```{r blue-jays-male-conf-band, fig.width = 5.5, fig.asp = 3/4, fig.cap = '(ref:blue-jays-male-conf-band)'}
+blue_jays_male <- filter(blue_jays, KnownSex == "M")
+fit <- gam(Head ~ Mass, data = blue_jays_male, method = "REML")
+newdata <- data.frame(Mass = seq(59, 82, length.out = 100))
+sample_df <- sample_outcomes(fit, newdata, 15, unconditional = TRUE)
+ci_df <- confidence_band(fit, newdata, unconditional = TRUE)
+ggplot(blue_jays_male, aes(Mass, Head)) + 
+  geom_ribbon(data = ci_df, aes(ymin = lo, ymax = hi), fill="grey70", color = NA, alpha = 1/2) +
+  geom_point(color = "grey60", size = 1.5) +
+  #geom_line(data = sample_df, aes(group = .draw), color = "#0072B2", size = 0.3) +
+  geom_line(data = ci_df, color = "#0072B2", size = 1) +
+  scale_x_continuous(
+    limits = c(59, 82),
+    expand = c(0, 0),
+    name = "body mass (g)") +
+  scale_y_continuous(
+    limits = c(52, 61),
+    expand = c(0, 0),
+    name = "head length (mm)"
+  ) +
+  theme_dviz_open()
+```
+
+(ref:blue-jays-male-fitted-draws) Head length versus body mass for male blue jays. In contrast to Figure  \@ref(fig:blue-jays-male-conf-band), the straight blue lines now represent equally likely alternative fits randomly drawn from the posterior distribution. Data source: Keith Tarvin, Oberlin College
+
+```{r blue-jays-male-fitted-draws, fig.width = 5.5, fig.asp = 3/4, fig.cap = '(ref:blue-jays-male-fitted-draws)'}
+ggplot(blue_jays_male, aes(Mass, Head)) + 
+  geom_ribbon(data = ci_df, aes(ymin = lo, ymax = hi), fill="grey70", color = NA, alpha = 1/2) +
+  geom_point(color = "grey60", size = 1.5) +
+  geom_line(data = sample_df, aes(group = .draw), color = "#0072B2", size = 0.3) +
+  #geom_line(data = ci_df, color = "#0072B2", size = 1) +
+  scale_x_continuous(
+    limits = c(59, 82),
+    expand = c(0, 0),
+    name = "body mass (g)") +
+  scale_y_continuous(
+    limits = c(52, 61),
+    expand = c(0, 0),
+    name = "head length (mm)"
+  ) +
+  theme_dviz_open()
+```
+
+To draw a confidence band, we need to specify a confidence level, and just as we saw for error bars and posterior probabilities, it can be useful to highlight different levels of confidence. This leads us to the graded confidence band, which shows several confidence levels at once (Figure \@ref(fig:blue-jays-male-graded-conf-band)). A graded confidence band enhances the sense of uncertainty in the reader, and it forces the reader to confront the possibility that the data might support different alternative trend lines.
+
+(ref:blue-jays-male-graded-conf-band) Head length versus body mass for male blue jays. As in the case of error bars, we can draw graded confidence bands to highlight the uncertainty in the estimate. Data source: Keith Tarvin, Oberlin College
+
+```{r blue-jays-male-graded-conf-band, fig.width = 5.5, fig.asp = 3/4, fig.cap = '(ref:blue-jays-male-graded-conf-band)'}
+ci_99_df <- confidence_band(fit, newdata, level = 0.99, unconditional = TRUE)
+ci_80_df <- confidence_band(fit, newdata, level = 0.80, unconditional = TRUE)
+ggplot(blue_jays_male, aes(Mass, Head)) + 
+  geom_ribbon(
+    data = ci_99_df,
+    aes(ymin = lo, ymax = hi, fill = "99%"),
+    color = NA
+  ) +
+  geom_ribbon(
+    data = ci_df,
+    aes(ymin = lo, ymax = hi, fill = "95%"),
+    color = NA
+  ) +
+  geom_ribbon(
+    data = ci_80_df,
+    aes(ymin = lo, ymax = hi, fill = "80%"),
+    color = NA
+  ) +
+  geom_point(color = "grey40", size = 1.5) +
+  geom_line(data = ci_df, color = darken("#0072B2", .4), size = 1) +
+  scale_fill_manual(
+    name = "confidence level",
+    values = c(
+     `80%` = desaturate(lighten("#0072B2", .4), .3),
+     `95%` = desaturate(lighten("#0072B2", .6), .3),
+     `99%` = desaturate(lighten("#0072B2", .8), .3)
+    ),
+    guide = guide_legend(
+      direction = "horizontal",
+      title.position = "top",
+      label.position = "bottom"
+    )
+  ) +
+  scale_x_continuous(
+    limits = c(59, 82),
+    expand = c(0, 0),
+    name = "body mass (g)"
+  ) +
+  scale_y_continuous(
+    limits = c(52, 61),
+    expand = c(0, 0),
+    name = "head length (mm)"
+  ) +
+  theme_dviz_open() +
+  theme(
+    legend.position = c(1, .01),
+    legend.justification = c(1, 0),
+    legend.key.height = grid::unit(12, "pt"),
+    legend.key.width = grid::unit(30, "pt"),
+    legend.spacing.x = grid::unit(6, "pt"),
+    legend.spacing.y = grid::unit(3, "pt"),
+    legend.box.background = element_rect(fill = "white", color = NA),
+    legend.box.spacing = grid::unit(0, "pt"),
+    legend.title = element_text(size = 12, hjust = 0.5)
+  )
+```
+
+We can also draw confidence bands for non-linear curve fits. Such confidence bands look nice but can be difficult to interpret (Figure \@ref(fig:mpg-uncertain)). If we look at Figure \@ref(fig:mpg-uncertain)a, we may think that the confidence band arises by moving the blue line up and down and maybe deforming it slightly. However, as Figure \@ref(fig:mpg-uncertain)b reveals, the confidence band represents a family of curves that are all quite a bit more wiggly than the overall best fit shown in part (a). This is a general principle of non-linear curve fits. Uncertainty corresponds not just to a movement of the curve up and down but also to increased wiggliness. 
+
+(ref:mpg-uncertain) Fuel efficiency versus displacement, for 32 cars (1973–74 models). Each dot represents one car, and the smooth lines were obtained by fitting a cubic regression spline with 5 knots. (a) Best fit spline and confidence band. (b) Equally likely alternative fits drawn from the posterior distribution. Data source: Motor Trend, 1974.
+
+```{r mpg-uncertain, fig.width = 5.5*6/4.2, fig.asp = 3/8, fig.cap='(ref:mpg-uncertain)'}
+set.seed(8692282)
+fit <- gam(mpg ~ s(disp, bs = 'cr', k = 5), data = mtcars, method = "REML")
+#fit <- gam(mpg ~ s(disp, bs = 'ts', k = 6), data = mtcars, method = "REML")
+newdata <- data.frame(disp = seq(min(mtcars$disp), max(mtcars$disp), length.out = 100))
+sample_df <- sample_outcomes(fit, newdata, 10, unconditional = TRUE)
+ci_df <- confidence_band(fit, newdata, unconditional = TRUE)
+cars_base <- ggplot(mtcars, aes(x = disp, y = mpg)) + 
+  scale_x_continuous(
+    name = "displacement (cu. in.)",
+    expand = c(0.01, 0)
+  ) +
+  ylab("fuel efficiency (mpg)") +
+  theme_dviz_grid(12) +
+  theme(plot.margin = margin(6, 1.5, 3, 1.5))
+p1 <- cars_base +
+  geom_ribbon(data = ci_df, aes(ymin = lo, ymax = hi), fill="grey70", color = NA, alpha = 1/2) +
+  geom_point(color = "grey60") +
+  geom_line(data = ci_df, color = "#0072B2", size = 1)
+p2 <- cars_base +
+  geom_ribbon(data = ci_df, aes(ymin = lo, ymax = hi), fill="grey70", color = NA, alpha = 1/2) +
+  geom_point(color = "grey60") +
+  geom_line(data = sample_df, aes(group = .draw), color = "#0072B2", size = 0.3)
+plot_grid(
+  p1, NULL, p2, align = 'hv',
+  nrow = 1,
+  labels = c("a", "", "b"),
+  rel_widths = c(1, .02, 1)
+)
+```
+
+## Best practices
+
+### Proportional ink
+> **The principle of proportional ink:** The sizes of shaded areas in a visualization need to be proportional to the data values they represent.
+
+```{r hawaii-income-bars-bad, fig.cap = '(ref:hawaii-income-bars-bad)'}
+p_income_base <- ggplot(filter(hawaii_income, year == 2015), aes(x = reorder(county, desc(median_income)), y = median_income)) +
+  geom_col(fill = "#56B4E9") +
+  xlab("county") +
+  theme_dviz_hgrid() +
+  theme(
+    axis.ticks.x = element_blank(),
+    plot.margin = margin(3, 7, 3, 1.5)
+  )
+p_income_bad <- p_income_base + 
+  coord_cartesian(xlim = c(0.5, 5.55), ylim = c(50000, 75000), expand = FALSE) +
+  scale_y_continuous(
+    name = "median income (USD)", 
+    breaks = 10000*(5:7),
+    labels = function(x) paste0("$", scales::comma(x))
+  )
+stamp_bad(p_income_bad)
+```
+
+(ref:hawaii-income-bars-good) Median income in the five counties of the state of Hawaii. Here, the *y* axis scale starts at \$0 and therefore the relative magnitudes of the median incomes in the five counties are accurately shown. Data source: 2015 Five-Year American Community Survey.
+
+```{r hawaii-income-bars-good, fig.cap = '(ref:hawaii-income-bars-good)'}
+p_income_good <- p_income_base + 
+  coord_cartesian(xlim = c(0.5, 5.55), ylim = c(0, 78000), expand = FALSE, clip = "off") +
+  scale_y_continuous(
+    name = "median income (USD)", 
+    breaks = 20000*(0:3),
+    labels = function(x) paste0("$", scales::comma(x))
+  ) +
+  theme(axis.line.x = element_blank())
+p_income_good
+```
+
+```{block type='rmdtip', echo=TRUE}
+Bars on a linear scale should always start at 0.
+```
+
+(ref:fb-stock-drop-bad) Stock price of Facebook (FB) from Oct. 22, 2016 to Jan. 21, 2017. This figure seems to imply that the Facebook stock price collapsed around Nov. 1, 2016. However, this is misleading, because the *y* axis starts at $110 instead of $0.
+
+```{r fb-stock-drop-bad, fig.cap = '(ref:fb-stock-drop-bad)'}
+df_fb_drop <- filter(ungroup(tech_stocks), ticker == "FB", date >= ymd("2016-10-22") & date < ymd("2017-01-22"))
+fb_drop_bad <- ggplot(df_fb_drop, aes(x=date, height=price - 110, y = 110)) +
+  geom_ridgeline(alpha = 0.7) +
+  scale_x_date(name = NULL, #name = "day",
+               breaks = ymd(c("2016-11-01", "2016-12-01", "2017-01-01")),
+               labels = c("Nov 1, 2016", "Dec 1, 2016", "Jan 1, 2017"),
+               expand=c(0, 0)) + 
+  scale_y_continuous(name="stock price (USD)",
+                     limits = c(110, 135),
+                     expand=c(0, 0)) + 
+  theme_dviz_open() +
+  background_grid(major = 'y', minor = 'none') +
+  theme(plot.margin = margin(14, 7, 3, 1.5))
+stamp_bad(fb_drop_bad)
+```
+
+(ref:fb-stock-drop-good) Stock price of Facebook (FB) from Oct. 22, 2016 to Jan. 21, 2017. By showing the stock price on a *y* scale from $0 to $150, this figure more accurately relays the magnitude of the FB price drop around Nov. 1, 2016.
+
+```{r fb-stock-drop-good, fig.cap = '(ref:fb-stock-drop-good)'}
+fb_drop_good <- ggplot(df_fb_drop, aes(x=date, height=price, y = 0)) +
+  geom_ridgeline(alpha = 0.7) +
+  scale_x_date(name = NULL, #name = "day",
+               breaks = ymd(c("2016-11-01", "2016-12-01", "2017-01-01")),
+               labels = c("Nov 1, 2016", "Dec 1, 2016", "Jan 1, 2017"),
+               expand=c(0,0)) + 
+  scale_y_continuous(name="stock price (USD)",
+                     limits = c(0, 150),
+                     expand=c(0,0)) +
+  theme_dviz_open() +
+  background_grid(major = 'y', minor = 'none') +
+  theme(plot.margin = margin(14, 7, 3, 1.5))
+stamp_phantom(fb_drop_good)
+```
+
+(ref:hawaii-income-change) Change in median income in Hawaiian counties from 2010 to 2015. Data source: 2010 and 2015 Five-Year American Community Surveys.
+
+```{r hawaii-income-change, fig.cap = '(ref:hawaii-income-change)'}
+hawaii_income_diff <- select(hawaii_income, county, year, median_income) %>%
+  spread(year, median_income) %>%
+  mutate(income_diff = `2015` - `2010`,
+         income_ratio = `2015` / `2010`)
+ggplot(hawaii_income_diff, aes(x = reorder(county, desc(filter(hawaii_income, year == 2015)$median_income)),
+                               y = income_diff)) + 
+  geom_col(fill = "#56B4E9") +
+  xlab("county") +
+  scale_y_continuous(
+    name = "5-year change in median income (USD)", 
+    limits = c(-5000, 25000),
+    expand = c(0, 0),
+    labels = c("-$5,000", "$0", "$5,000", "$10,000", "$15,000", "$20,000", "$25,000")
+  ) +
+  theme_dviz_hgrid() + 
+  theme(axis.ticks.x = element_blank(),
+        plot.margin = margin(7, 7, 3, 1.5))
+```
+
+### Overlapping points
+
+(ref:mpg-cty-displ-solid) City fuel economy versus engine displacement, for popular cars released between 1999 and 2008. Each point represents one car. The point color encodes the drive train: front-wheel drive (FWD), rear-wheel drive (RWD), or four-wheel drive (4WD). The figure is labeled "bad" because many points are plotted on top of others and obscure them. 
+
+```{r mpg-cty-displ-solid, fig.width=5.5, fig.asp=.7416, fig.cap='(ref:mpg-cty-displ-solid)'}
+p_mpg_solid <- ggplot(mpg, aes(y = cty, x = displ, color = drv, fill = drv)) +
+  geom_point(size = 3, shape = 21) + 
+  ylab("fuel economy (mpg)") +
+  xlab("displacement (l)") +
+  scale_color_manual(values=c("#202020", "#E69F00", "#56B4E9"), 
+                     name="drive train",
+                     breaks=c("f", "r", "4"),
+                     labels=c("FWD", "RWD", "4WD")) +
+  scale_fill_manual(values=c("#202020", "#E69F00", "#56B4E9"), 
+                     name="drive train",
+                     breaks=c("f", "r", "4"),
+                     labels=c("FWD", "RWD", "4WD")) +
+  theme_dviz_open() +
+  theme(legend.position = c(.7, .8),
+        plot.margin = margin(3, 7, 3, 1.5))
+stamp_bad(p_mpg_solid)
+```
+
+One way to ameliorate this problem is to use partial transparency. If we make individual points partially transparent, then overplotted points appear as darker points and thus the shade of the points reflects the density of points in that location of the graph (Figure \@ref(fig:mpg-cty-displ-transp)).
+
+(ref:mpg-cty-displ-transp) City fuel economy versus engine displacement. Because points have been made partially transparent, points that lie on top of other points can now be identified by their darker shade. 
+
+```{r mpg-cty-displ-transp, fig.width=5.5, fig.asp=.7416, fig.cap='(ref:mpg-cty-displ-transp)'}
+p_mpg_transp <- ggplot(mpg, aes(y = cty, x = displ, color = drv, fill = drv)) +
+  geom_point(size = 3, shape = 21) + 
+  ylab("fuel economy (mpg)") +
+  xlab("displacement (l)") +
+  scale_color_manual(values=c("#202020", "#E69F00", "#56B4E9"), 
+                     name="drive train",
+                     breaks=c("f", "r", "4"),
+                     labels=c("FWD", "RWD", "4WD")) +
+  scale_fill_manual(values=c("#20202080", "#E69F0080", "#56B4E980"), 
+                     name="drive train",
+                     breaks=c("f", "r", "4"),
+                     labels=c("FWD", "RWD", "4WD")) +
+  theme_dviz_open() +
+  theme(legend.position = c(.7, .8),
+        plot.margin = margin(3, 7, 3, 1.5))
+p_mpg_transp
+```
+
+However, making points partially transparent is not always sufficient to solve the issue of overplotting. For example, even though we can see in Figure \@ref(fig:mpg-cty-displ-transp) that some points have a darker shade than others, it is difficult to estimate how many points were plotted on top of each other in each location. In addition, while the differences in shading are clearly visible, they are not self-explanatory. A reader who sees this figure for the first time will likely wonder why some points are darker than others and will not realize that those points are in fact multiple points stacked on top of each other. A simple trick that helps in this situation is to apply a small amount of jitter to the points, i.e., to displace each point randomly by a small amount in either the *x* or the *y* direction or both. With jitter, it is immediately apparent that the darker areas arise from points that are plotted on top of each other (Figure \@ref(fig:mpg-cty-displ-jitter)). Also, now, for the first time the black dots representing four-wheel drive cars with 2.0 liter engines are clearly visible.
+
+(ref:mpg-cty-displ-jitter) City fuel economy versus engine displacement. By adding a small amount of jitter to each point, we can make the overplotted points more clearly visible without substantially distorting the message of the plot.
+
+```{r mpg-cty-displ-jitter, fig.width=5.5, fig.asp=.7416, fig.cap='(ref:mpg-cty-displ-jitter)'}
+p_mpg_jitter <- ggplot(mpg, aes(y = cty, x = displ, color = drv, fill = drv)) +
+  geom_point(size = 3, shape = 21,
+             position = position_jitter(width = 0.01 * diff(range(mpg$displ)),
+                                        height = 0.01 * diff(range(mpg$cty)),
+                                        seed = 7384)) + 
+  ylab("fuel economy (mpg)") +
+  xlab("displacement (l)") +
+  scale_color_manual(values=c("#202020", "#E69F00", "#56B4E9"), 
+                     name="drive train",
+                     breaks=c("f", "r", "4"),
+                     labels=c("FWD", "RWD", "4WD")) +
+  scale_fill_manual(values=c("#20202080", "#E69F0080", "#56B4E980"), 
+                     name="drive train",
+                     breaks=c("f", "r", "4"),
+                     labels=c("FWD", "RWD", "4WD")) +
+  theme_dviz_open() +
+  theme(legend.position = c(.7, .8),
+        plot.margin = margin(3, 7, 3, 1.5))
+p_mpg_jitter
+```
+
+One downside of jittering is that it does change the data and therefore has to be performed with care. If we jitter too much, we end up placing points in locations that are not representative of the underlying dataset. The result is a misleading visualization of the data. See Figure \@ref(fig:mpg-cty-displ-jitter-extreme) as an example.
+
+(ref:mpg-cty-displ-jitter-extreme) City fuel economy versus engine displacement. By adding too much jitter to the points, we have created a visualization that does not accurately reflect the underlying dataset.
+
+```{r mpg-cty-displ-jitter-extreme, fig.width=5.5, fig.asp=.7416, fig.cap='(ref:mpg-cty-displ-jitter-extreme)'}
+p_mpg_jitter_extreme <- ggplot(mpg, aes(y = cty, x = displ, color = drv, fill = drv)) +
+  geom_point(size = 3, shape = 21,
+             position = position_jitter(width = 0.1 * diff(range(mpg$displ)),
+                                        height = 0.1 * diff(range(mpg$cty)))) + 
+  scale_x_continuous(breaks = 2:7) +
+  ylab("fuel economy (mpg)") +
+  xlab("displacement (l)") +
+  scale_color_manual(values=c("#202020", "#E69F00", "#56B4E9"), 
+                     name="drive train",
+                     breaks=c("f", "r", "4"),
+                     labels=c("FWD", "RWD", "4WD")) +
+  scale_fill_manual(values=c("#20202080", "#E69F0080", "#56B4E980"), 
+                     name="drive train",
+                     breaks=c("f", "r", "4"),
+                     labels=c("FWD", "RWD", "4WD")) +
+  theme_dviz_open() +
+  theme(legend.position = c(.7, .8),
+        plot.margin = margin(3, 7, 3, 1.5))
+stamp_bad(p_mpg_jitter_extreme)
+```
+
+(ref:popgrowth-vs-popsize-colored) Population growth from 2000 to 2010 versus population size in 2000, for all 50 U.S. states and the District of Columbia. Every state is marked in a different color. Because there are so many states, it is very difficult to match the colors in the legend to the dots in the scatter plot. Data source: U.S. Census Bureau
+
+```{r popgrowth-vs-popsize-colored, fig.width = 6, fig.asp = 2*0.618, fig.cap = '(ref:popgrowth-vs-popsize-colored)'}
+popgrowth_df <- left_join(US_census, US_regions) %>%
+    group_by(region, division, state) %>%
+    summarize(pop2000 = sum(pop2000, na.rm = TRUE),
+              pop2010 = sum(pop2010, na.rm = TRUE),
+              popgrowth = (pop2010-pop2000)/pop2000,
+              area = sum(area)) %>%
+    arrange(popgrowth) %>%
+    ungroup() %>%
+    mutate(state = factor(state, levels = state),
+           region = factor(region, levels = c("West", "South", "Midwest", "Northeast")))
+colors <- c(rainbow_hcl(8, l = 35, c = 25, start = 0, end = 315),
+            rainbow_hcl(8, l = 45, c = 34, start = -10, end = 305),
+            rainbow_hcl(9, l = 55, c = 42, start = -20, end = 300),
+            rainbow_hcl(9, l = 65, c = 50, start = -30, end = 290),
+            rainbow_hcl(9, l = 75, c = 55, start = -40, end = 280),
+            rainbow_hcl(8, l = 85, c = 32, start = -50, end = 265))
+#colors <- sample(colors, 51)
+p_base <- ggplot(popgrowth_df, aes(x = pop2000, y = popgrowth, color = as.character(state))) +
+  geom_point(size = 4) +
+  scale_x_log10(labels = label_log10) +
+  scale_y_continuous(labels = scales::percent_format(accuracy = 1)) +
+  scale_color_manual(values = colors, name = "state") +
+  xlab("population size in 2000") +
+  ylab("population growth\n2000 to 2010   ") +
+  theme_dviz_grid() +
+  theme(
+    legend.text = element_text(size = 10),
+    legend.title = element_text(size = 12),
+    legend.justification = "center",
+    legend.box.margin = margin(14, 0, 28, 0),
+    legend.spacing.y = unit(2, "pt"),
+    plot.margin = margin(14, 14, 14, 1.5)
+  )
+p_comb <- plot_grid(p_base + theme(legend.position = "none"), get_legend(p_base), ncol = 1)
+stamp_bad(p_comb)
+```
+
+As a rule of thumb, qualitative color scales work best when there are three to five different categories that need to be colored. Once we reach eight to ten different categories or more, the task of matching colors to categories becomes too burdensome to be useful, even if the colors remain sufficiently different to be distinguishable in principle. For the dataset of Figure \@ref(fig:popgrowth-vs-popsize-colored), it is probably best to use color only to indicate the geographic region of each state and to identify individual states by direct labeling, i.e., by placing appropriate text labels adjacent to the data points (Figure \@ref(fig:popgrowth-vs-popsize-bw)). Even though we cannot label every individual state without making the figure too crowded, direct labeling is the right choice for this figure. In general, for figures such as this one, we don't need to label every single data point. It is sufficient to label a representative subset, for example a set of states we specifically want to call out in the text that will accompany the figure. We always have the option to also provide the underlying data as a table if we want to make sure the reader has access to it in its entirety.
+
+(ref:popgrowth-vs-popsize-bw) Population growth from 2000 to 2010 versus population size in 2000. In contrast to Figure \@ref(fig:popgrowth-vs-popsize-colored), I have now colored states by region and have directly labeled a subset of states. The majority of states have been left unlabeled to keep the figure from overcrowding. Data source: U.S. Census Bureau
+
+```{r popgrowth-vs-popsize-bw, fig.width = 5.5*6/4.2, fig.cap = '(ref:popgrowth-vs-popsize-bw)'}
+library(ggrepel)
+set.seed(7586)
+region_colors <- c("#E69F00", "#56B4E9", "#009E73", "#F0E442")
+labeled_states <- c(
+  "Alaska", "Arizona", "California", "Florida", "Wisconsin", 
+  "Louisiana", "Nevada", "Michigan", "Montana", "New Mexico",
+  "Pennsylvania", "New York", "Oregon", "Rhode Island",
+  "Tennessee", "Texas", "Utah", "Vermont"
+)
+df_repel <- select(popgrowth_df, x = pop2000, y = popgrowth, state) %>%
+  mutate(label = ifelse(state %in% labeled_states, as.character(state), ""))
+ggplot(popgrowth_df, aes(x = pop2000, y = popgrowth, color = region, fill = region)) +
+  geom_text_repel(
+    data = df_repel,
+    aes(x, y, label = label),
+    segment.alpha = 0.5, point.padding = 0.25,
+    box.padding = .8,
+    force = 1,
+    min.segment.length = 0.1,
+    family = dviz_font_family,
+    size = 11/.pt, inherit.aes = FALSE
+  ) +
+  geom_point(size = 3.5, color = "white") +
+  geom_point(size = 2.5, shape = 21) +
+  scale_x_log10(labels = label_log10) +
+  scale_y_continuous(labels = scales::percent_format(accuracy = 1)) +
+  scale_fill_manual(values = region_colors) +
+  scale_color_manual(values = darken(region_colors, .3)) +
+  xlab("population size in 2000") +
+  ylab("population growth, 2000 to 2010") +
+  theme_dviz_grid()
+```
+
+
+```{block type='rmdtip', echo=TRUE}
+Use direct labeling instead of colors when you need to distinguish between more than about eight categorical items.
+```
+
+(ref:popgrowth-US-rainbow) Population growth in the U.S. from 2000 to 2010. The rainbow coloring of states serves no purpose and is distracting. Furthermore, the colors are overly saturated. Data source: U.S. Census Bureau
+
+```{r popgrowth-US-rainbow, fig.width = 6, fig.asp = 1.2, fig.cap = '(ref:popgrowth-US-rainbow)'}
+popgrowth_bars_rainbow <- ggplot(popgrowth_df, aes(x = state, y = 100*popgrowth, fill = state)) + 
+  geom_col() + 
+  scale_y_continuous(
+    limits = c(-.6, 37.5), expand = c(0, 0),
+    labels = scales::percent_format(accuracy = 1, scale = 1),
+    name = "population growth, 2000 to 2010"
+  ) +
+  scale_fill_hue(c = 140, l = 55) +
+  coord_flip() + 
+  theme_dviz_vgrid(12, rel_small = 1) +
+  theme(axis.title.y = element_blank(),
+        axis.line.y = element_blank(),
+        axis.ticks.length = unit(0, "pt"),
+        axis.text.y = element_text(size = 10),
+        legend.position = "none",
+        plot.margin = margin(18, 1.5, 3, 1.5))
+stamp_ugly(popgrowth_bars_rainbow)
+```
+
+Besides the gratuitous use of different colors, Figure \@ref(fig:popgrowth-US-rainbow) has a second color-related problem: The chosen colors are too saturated and intense. This color intensity makes the figure difficult to look at. For example, it is difficult to read the names of the states without having our eyes drawn to the large, strongly colored areas right next to the state names. Similarly, it is difficult to compare the endpoints of the bars to the underlying grid lines.
+
+```{block type='rmdtip', echo=TRUE}
+Avoid large filled areas of overly saturated colors. They make it difficult for your reader to carefully inspect your figure.
+```
+
+### Redundant coding
+
+(ref:iris-scatter-one-shape) Sepal width versus sepal length for three different iris species (*Iris setosa*, *Iris virginica*, and *Iris versicolor*). Each point represents the measurements for one plant sample. A small amount of jitter has been applied to all point positions to prevent overplotting. The figure is labeled "bad" because the *virginica* points in green and the *versicolor* points in blue are difficult to distinguish from each other.
+
+```{r iris-scatter-one-shape, fig.cap = '(ref:iris-scatter-one-shape)'}
+breaks = c("setosa", "virginica", "versicolor")
+labels = paste0("Iris ", breaks)
+iris_scatter_base <- ggplot(iris, aes(x = Sepal.Length, y = Sepal.Width, fill = Species, color = Species)) + 
+    scale_color_manual(
+      values = darken(c("#E69F00", "#56B4E9", "#009E73"), 0.3),
+      breaks = breaks,
+      labels = labels,
+      name = NULL
+    ) +
+    scale_fill_manual(
+      values = c("#E69F0080", "#56B4E980", "#009E7380"),
+      breaks = breaks,
+      labels = labels,
+      name = NULL
+    ) +
+    scale_x_continuous(
+      limits = c(3.95, 8.2), expand = c(0, 0),
+      labels = c("4.0", "5.0", "6.0", "7.0", "8.0"),
+      name = "sepal length"
+    ) +
+    scale_y_continuous(
+      limits = c(1.9, 4.6), expand = c(0, 0),
+      name = "sepal width"
+    )
+iris_scatter <- iris_scatter_base +
+  geom_point(
+    size=2.5, shape=21, stroke = 0.5,
+    position = position_jitter(
+      width = 0.01 * diff(range(iris$Sepal.Length)),
+      height = 0.01 * diff(range(iris$Sepal.Width)),
+      seed = 3942
+    )
+  ) +
+  theme_dviz_grid() +
+  theme(
+    legend.title.align = 0.5,
+    legend.text = element_text(face = "italic"),
+    legend.spacing.y = unit(3.5, "pt"),
+    plot.margin = margin(7, 7, 3, 1.5)
+  )
+stamp_bad(iris_scatter)
+```
+
+Surprisingly, the green and blue points look more distinct for people with red--green color-vision-deficiency (deuteranomaly or protanomaly) than for people with normal color vision (compare Figure \@ref(fig:iris-scatter-one-shape-cvd), top row, to Figure \@ref(fig:iris-scatter-one-shape)). On the other hand, for people with blue--yellow deficiency (tritanomaly) the blue and green points look very similar (Figure \@ref(fig:iris-scatter-one-shape-cvd), bottom left). And if we print out the figure in gray-scale (i.e., we *desaturate* the figure), we cannot distinguish any of the iris species (Figure \@ref(fig:iris-scatter-one-shape-cvd), bottom right).
+
+(ref:iris-scatter-one-shape-cvd) Color-vision-deficiency simulation of Figure \@ref(fig:iris-scatter-one-shape).
+
+```{r iris-scatter-one-shape-cvd, fig.width = 5.5*6/4.2, fig.asp = 0.66, fig.cap = '(ref:iris-scatter-one-shape-cvd)'}
+iris_scatter_small <- iris_scatter_base +
+  geom_point(
+    size=.655*2.5, shape=21, stroke = .655*0.5,
+    position = position_jitter(
+      width = 0.01 * diff(range(iris$Sepal.Length)),
+      height = 0.01 * diff(range(iris$Sepal.Width)),
+      seed = 3942
+    )
+  ) +
+  theme_dviz_grid(
+    .655*14,
+    line_size = .85*.5 # make line size a little bigger than mathematically correct
+  ) + 
+  theme(
+    legend.title.align = 0.5,
+    legend.text = element_text(face = "italic"),
+    legend.spacing.y = grid::unit(.655*3, "pt"),
+    plot.margin = margin(18, 1, 1, 1)
+  )
+cvd_sim2(iris_scatter_small, label_size = 14, label_y = .98, scale = .95)
+```
+
+There are two simple improvements we can make to Figure \@ref(fig:iris-scatter-one-shape) to alleviate these issues. First, we can swap the colors used for *Iris setosa* and *Iris versicolor*, so that the blue is no longer directly next to the green (Figure \@ref(fig:iris-scatter-three-shapes)). Second, we can use three different symbol shapes, so that the points all look different. With these two changes, both the original version of the figure (Figure \@ref(fig:iris-scatter-three-shapes)) and the versions under color-vision-deficiency and in grayscale (Figure \@ref(fig:iris-scatter-three-shapes-cvd)) become legible.
+
+(ref:iris-scatter-three-shapes) Sepal width versus sepal length for three different iris species. Compared to Figure \@ref(fig:iris-scatter-one-shape), we have swapped the colors for *Iris setosa* and *Iris versicolor* and we have given each iris species its own point shape.
+
+```{r iris-scatter-three-shapes, fig.cap = '(ref:iris-scatter-three-shapes)'}
+iris_scatter2_base <- ggplot(
+  iris, aes(x = Sepal.Length, y = Sepal.Width, shape = Species, fill = Species, color = Species)
+) +     
+    scale_shape_manual(
+      values = c(21, 22, 23),
+      breaks = breaks,
+      labels = labels,
+      name = NULL
+    ) +
+    scale_color_manual(
+      values = darken(c("#56B4E9", "#E69F00", "#009E73"), 0.3),
+      breaks = breaks,
+      labels = labels,
+      name = NULL
+    ) +
+    scale_fill_manual(
+      values = c("#56B4E980", "#E69F0080", "#009E7380"),
+      breaks = breaks,
+      labels = labels,
+      name = NULL
+    ) +
+    scale_x_continuous(
+      limits = c(3.95, 8.2), expand = c(0, 0),
+      labels = c("4.0", "5.0", "6.0", "7.0", "8.0"),
+      name = "sepal length"
+    ) +
+    scale_y_continuous(
+      limits = c(1.9, 4.6), expand = c(0, 0),
+      name = "sepal width"
+    )
+iris_scatter2 <- iris_scatter2_base +
+  geom_point(
+    size=2.5, stroke = 0.5,
+    position = position_jitter(
+      width = 0.01 * diff(range(iris$Sepal.Length)),
+      height = 0.01 * diff(range(iris$Sepal.Width)),
+      seed = 3942)
+  ) +
+  theme_dviz_grid() +
+  theme(
+    legend.title.align = 0.5,
+    legend.text = element_text(face = "italic"),
+    legend.spacing.y = unit(3.5, "pt"),
+    plot.margin = margin(7, 7, 3, 1.5)
+  )
+iris_scatter2
+```
+
+
+(ref:iris-scatter-three-shapes-cvd) Color-vision-deficiency simulation of Figure \@ref(fig:iris-scatter-three-shapes). Because of the use of different point shapes, even the fully desaturated gray-scale version of the figure is legible.
+
+```{r iris-scatter-three-shapes-cvd, fig.width = 5.5*6/4.2, fig.asp = 0.66, fig.cap = '(ref:iris-scatter-three-shapes-cvd)'}
+iris_scatter2_small <- iris_scatter2_base +
+  geom_point(
+    size=.655*2.5, stroke = .655*0.5,
+    position = position_jitter(
+      width = 0.01 * diff(range(iris$Sepal.Length)),
+      height = 0.01 * diff(range(iris$Sepal.Width)),
+      seed = 3942)
+  ) +
+  theme_dviz_grid(
+   .655*14,
+    line_size = .85*.5 # make line size a little bigger than mathematically correct
+  ) + 
+  theme(
+    legend.title.align = 0.5,
+    legend.text = element_text(face = "italic"),
+    legend.spacing.y = grid::unit(.655*3, "pt"),
+    plot.margin = margin(18, 1, 1, 1)
+  )
+cvd_sim2(iris_scatter2_small, label_size = 14, label_y = .98, scale = .95)
+```
+
+Changing the point shape is a simple strategy for scatter plots but it doesn't necessarily work for other types of plots. In line plots, we could change the line type (solid, dashed, dotted, etc., see also Figure \@ref(fig:common-aesthetics)), but using dashed or dotted lines often yields sub-optimal results. In particular, dashed or dotted lines usually don't look good unless they are perfectly straight or only gently curved, and in either case they create visual noise. Also, it frequently requires significant mental effort to match different types of dash or dot--dash patterns from the plot to the legend. So what do we do with a visualization such as Figure \@ref(fig:tech-stocks-bad-legend), which uses lines to show the change in stock price over time for four different major tech companies?
+
+(ref:tech-stocks-bad-legend) Stock price over time for four major tech companies. The stock price for each company has been normalized to equal 100 in June 2012. This figure is labeled as "bad" because it takes considerable mental energy to match the company names in the legend to the data curves. Data source: Yahoo Finance
+
+```{r tech-stocks-bad-legend, fig.cap = '(ref:tech-stocks-bad-legend)'}
+price_plot_base <- ggplot(ungroup(tech_stocks), aes(x = date, y = price_indexed, color = ticker)) +
+  geom_line(size = 0.66, na.rm = TRUE) +
+  scale_color_manual(
+    values = c("#000000", "#E69F00", "#56B4E9", "#009E73"),
+    name = "",
+    breaks = c("GOOG", "AAPL", "FB", "MSFT"),
+    labels = c("Alphabet", "Apple", "Facebook", "Microsoft")
+  ) +
+  scale_x_date(
+    name = "year",
+    limits = c(ymd("2012-06-01"), ymd("2017-05-31")),
+    expand = c(0,0)
+  ) + 
+  scale_y_continuous(
+    name = "stock price, indexed",
+    limits = c(0, 560),
+    expand = c(0,0)
+  )
+stamp_bad(
+  price_plot_base + 
+    theme_dviz_hgrid() + 
+    theme(plot.margin = margin(3, 7, 3, 1.5))
+)
+```
+
+
+The figure contains four lines representing the stock prices of the four different companies. The lines are color coded using a colorblind-friendly color scale. So it should be relatively straightforward to associate each line with the corresponding company. Yet it is not. The problem here is that the data lines have a clear visual order. The yellow line, representing Facebook, is clearly the highest line, and the black line, representing Apple, is clearly the lowest, with Alphabet and Microsoft in between, in that order. Yet the order of the four companies in the legend is Alphabet, Apple, Facebook, Microsoft (alphabetic order). Thus, the perceived order of the data lines differs from the order of the companies in the legend, and it takes a surprising amount of mental effort to match data lines with company names.
+
+This problem arises commonly with plotting software that autogenerates legends. The plotting software has no concept of the visual order the viewer will perceive. Instead, the software sorts the legend by some other order, most commonly alphabetical. We can fix this problem by manually reordering the entries in the legend so they match the perceived ordering in the data (Figure \@ref(fig:tech-stocks-good-legend)). The result is a figure that makes it much easier to match the legend to the data.
+
+(ref:tech-stocks-good-legend) Stock price over time for four major tech companies. The stock price for each company has been normalized to equal 100 in June 2012. Data source: Yahoo Finance
+
+```{r tech-stocks-good-legend, fig.cap = '(ref:tech-stocks-good-legend)'}
+price_plot_base_good <- ggplot(ungroup(tech_stocks), aes(x = date, y = price_indexed, color = ticker)) +
+  scale_color_manual(
+    values = c("#000000", "#E69F00", "#56B4E9", "#009E73"),
+    name = "",
+    breaks = c("FB", "GOOG", "MSFT", "AAPL"),
+    labels = c("Facebook", "Alphabet", "Microsoft", "Apple")
+  ) +
+  scale_x_date(
+    name = "year",
+    limits = c(ymd("2012-06-01"), ymd("2017-05-31")),
+    expand = c(0,0)
+  ) + 
+  scale_y_continuous(
+    name = "stock price, indexed",
+    limits = c(0, 560),
+    expand = c(0,0)
+  )
+price_plot_base_good +
+  geom_line(size = 0.66, na.rm = TRUE) +
+  theme_dviz_hgrid() + 
+  theme(plot.margin = margin(3, 7, 3, 1.5))
+```
+
+```{block type='rmdtip', echo=TRUE}
+If there is a clear visual ordering in your data, make sure to match it in the legend.
+```
+
+
+Matching the legend order to the data order is always helpful, but the benefits are particularly obvious under color-vision deficiency simulation (Figure \@ref(fig:tech-stocks-good-legend-cvd)). For example, it helps in the tritanomaly version of the figure, where the blue and the green become difficult to distinguish (Figure \@ref(fig:tech-stocks-good-legend-cvd), bottom left). It also helps in the grayscale version (Figure \@ref(fig:tech-stocks-good-legend-cvd), bottom right). Even though the two colors for Facebook and Alphabet have virtually the same gray value, we can see that Microsoft and Apple are represented by darker colors and take the bottom two spots. Therefore, we correctly assume that the highest line corresponds to Facebook and the second-highest line to Alphabet.
+
+(ref:tech-stocks-good-legend-cvd) Color-vision-deficiency simulation of Figure \@ref(fig:tech-stocks-good-legend).
+
+```{r tech-stocks-good-legend-cvd, fig.width = 5.5*6/4.2, fig.asp = 0.66, fig.cap = '(ref:tech-stocks-good-legend-cvd)'}
+price_plot_good_small <-
+  price_plot_base_good + 
+  geom_line(
+    size = .85*0.66, # make line size a little bigger than mathematically correct
+    na.rm = TRUE
+  ) +
+  theme_dviz_hgrid(
+    .655*14,
+    line_size = .85*.5 # make line size a little bigger than mathematically correct
+  ) + 
+  theme(plot.margin = margin(18, 1, 1, 1))
+cvd_sim2(price_plot_good_small, label_size = 14, label_y = .98, scale = .95)
+```
+
+### Figures without legends
+
+Even though legend legibility can be improved by encoding data redundantly, in multiple aesthetics, legends always put an extra mental burden on the reader. In reading a legend, the reader needs to pick up information in one part of the visualization and then transfer it over to a different part. We can typically make our readers' lives easier if we eliminate the legend altogether. Eliminating the legend does not mean, however, that we simply not provide one and instead write sentences such as "The yellow dots represent *Iris versicolor*" in the figure caption. Eliminating the legend means that we design the figure in such a way that it is immediately obvious what the various graphical elements represent, even if no explicit legend is present.
+
+The general strategy we can employ is called *direct labeling*, whereby we place appropriate text labels or other visual elements that serve as guideposts to the rest of the figure. We have previously encountered direct labeling in Chapter \@ref(color-pitfalls) (Figure \@ref(fig:popgrowth-vs-popsize-bw)), as an alternative to drawing a legend with over 50 distinct colors. To apply the direct labeling concept to the stock-price figure, we place the name of each company right next to the end of its respective data line (Figure \@ref(fig:tech-stocks-good-no-legend)). 
+
+(ref:tech-stocks-good-no-legend) Stock price over time for four major tech companies. The stock price for each company has been normalized to equal 100 in June 2012. Data source: Yahoo Finance
+
+```{r tech-stocks-good-no-legend, fig.cap = '(ref:tech-stocks-good-no-legend)'}
+price_plot <- price_plot_base_good + 
+  geom_line(size = 0.66, na.rm = TRUE) +
+  theme_dviz_hgrid()
+yann <- axis_canvas(price_plot, axis = "y") +
+  geom_text(
+    data = filter(ungroup(tech_stocks), date == "2017-06-02"),
+    aes(y = price_indexed, label = paste0(" ", company)),
+    family = dviz_font_family,
+    x = 0, hjust = 0, size = 12/.pt
+  )
+price_plot_ann <- insert_yaxis_grob(
+  price_plot + theme(legend.position = "none"),
+  yann,
+  width = grid::unit(0.3, "null")
+)
+ggdraw(price_plot_ann)
+```
+
+
+```{block type='rmdtip', echo=TRUE}
+Whenever possible, design your figures so they don't need a legend.
+```
+
+We can also apply the direct labeling concept to the iris data from the beginning of this chapter, specifically Figure \@ref(fig:iris-scatter-three-shapes). Because it is a scatter plot of many points that separate into three different groups, we need to direct label the groups rather than the individual points. One solution is to draw ellipses that enclose the majority of the points and then label the ellipses (Figure \@ref(fig:iris-scatter-with-ellipses)).
+
+(ref:iris-scatter-with-ellipses) Sepal width versus sepal length for three different iris species. I have removed the background grid from this figure because otherwise the figure was becoming too busy.
+
+```{r iris-scatter-with-ellipses, fig.width = 4.6, fig.asp = 0.8, fig.cap = '(ref:iris-scatter-with-ellipses)'}
+label_df <- data.frame(
+  Species = c("setosa", "virginica", "versicolor"),
+  label = c("Iris setosa", "Iris virginica", "Iris versicolor"),
+  Sepal.Width = c(4.2, 3.76, 2.08),
+  Sepal.Length = c(5.7, 7, 5.1),
+  hjust = c(0, 0.5, 0),
+  vjust = c(0, 0.5, 1))
+iris_scatter3 <- ggplot(iris, 
+      aes(
+        x = Sepal.Length,
+        y = Sepal.Width,
+        color = Species
+      )
+    ) + 
+    geom_point(
+      aes(shape = Species, fill = Species),
+      size = 2.5,
+      position = position_jitter(
+        width = 0.01 * diff(range(iris$Sepal.Length)),
+        height = 0.01 * diff(range(iris$Sepal.Width)),
+        seed = 3942)
+    ) +
+    stat_ellipse(size = 0.5) +
+    geom_text(
+      data = label_df,
+      aes(
+        x = Sepal.Length, y = Sepal.Width, label = label, color = Species,
+        hjust = hjust, vjust = vjust
+      ),
+      family = dviz_font_family,
+      size = 14/.pt,
+      fontface = "italic",
+      inherit.aes = FALSE
+    ) +
+    scale_shape_manual(
+      values = c(21, 22, 23),
+      breaks = breaks,
+      name = NULL
+    ) +
+    scale_fill_manual(
+      values = c("#56B4E980", "#E69F0080", "#009E7380"),
+      breaks = breaks,
+      name = NULL
+    ) +
+    scale_color_manual(
+      values = darken(c("#56B4E9", "#E69F00", "#009E73"), 0.3),
+      breaks = breaks,
+      name = NULL
+    ) +
+    guides(fill = "none", color = "none", shape = "none") +
+    scale_x_continuous(
+      limits = c(3.95, 8.2), expand = c(0, 0),
+      labels = c("4.0", "5.0", "6.0", "7.0", "8.0"),
+      name = "sepal length"
+    ) +
+    scale_y_continuous(
+      limits = c(1.9, 4.6), expand = c(0, 0),
+      name = "sepal width"
+    ) +
+    theme_dviz_open()
+iris_scatter3
+```
+
+For density plots, we can similarly direct-label the curves rather than providing a color-coded legend (Figure \@ref(fig:iris-densities-direct-label)). In both Figures \@ref(fig:iris-scatter-with-ellipses) and \@ref(fig:iris-densities-direct-label), I have colored the text labels in the same colors as the data. Colored labels can greatly enhance the direct labeling effect, but they can also turn out very poorly. If the text labels are printed in a color that is too light, then the labels become difficult to read. And, because text consists of very thin lines, colored text often appears to be lighter than an adjacent filled area of the same color. I generally circumvent these issues by using two different shades of each color, a light one for filled areas and a dark one for lines, outlines, and text. If you carefully inspect Figure \@ref(fig:iris-scatter-with-ellipses) or \@ref(fig:iris-densities-direct-label), you will see how each data point or shaded area is filled with a light color and has an outline drawn in a darker color of the same hue. And the text labels are drawn in the same darker colors. 
+
+(ref:iris-densities-direct-label) Density estimates of the sepal lengths of three different iris species. Each density estimate is directly labeled with the respective species name.
+
+```{r iris-densities-direct-label, fig.cap = '(ref:iris-densities-direct-label)'}
+# compute densities for sepal lengths
+iris_dens <- group_by(iris, Species) %>%
+  do(ggplot2:::compute_density(.$Sepal.Length, NULL)) %>%
+  rename(Sepal.Length = x)
+# get the maximum values
+iris_max <- filter(iris_dens, density == max(density)) %>%
+  ungroup() %>%
+  mutate(
+    hjust = c(0, 0.4, 0),
+    vjust = c(1, 0, 1),
+    nudge_x = c(0.11, 0, 0.24),
+    nudge_y = c(-0.02, 0.02, -0.02),
+    label = paste0("Iris ", Species)
+  )
+iris_p <- ggplot(iris_dens, aes(x = Sepal.Length, y = density, fill = Species, color = Species)) + 
+  geom_density_line(stat = "identity") +
+  geom_text(
+    data = iris_max,
+    aes(
+      label = label, hjust = hjust, vjust = vjust, color = Species,
+      x = Sepal.Length + nudge_x, 
+      y = density + nudge_y
+    ), 
+    family = dviz_font_family,
+    size = 14/.pt,
+    inherit.aes = FALSE,
+    fontface = "italic"
+  ) +
+  scale_color_manual(
+    values = darken(c("#56B4E9", "#E69F00", "#009E73"), 0.3),
+    breaks = c("virginica", "versicolor", "setosa"),
+    guide = "none"
+  ) +
+  scale_fill_manual(
+    values = c("#56B4E950", "#E69F0050", "#009E7350"),
+    breaks = c("virginica", "versicolor", "setosa"),
+    guide = "none"
+  ) +
+  scale_x_continuous(expand = c(0, 0), name = "sepal length") +
+  scale_y_continuous(limits = c(0, 1.5), expand = c(0, 0)) +
+  coord_cartesian(clip = "off") +
+  theme_dviz_hgrid() +
+  theme(
+    axis.line.x = element_blank(),
+    plot.margin = margin(6.5, 1.5, 3.5, 1.5)
+  )
+  
+iris_p
+```
+
+We can also use density plots such as the one in Figure \@ref(fig:iris-densities-direct-label) as a legend replacement, by placing the density plots into the margins of a scatter plot (Figure \@ref(fig:iris-scatter-dens)). This allows us to direct-label the marginal density plots rather than the central scatter plot and hence results in a figure that is somewhat less cluttered than Figure \@ref(fig:iris-scatter-with-ellipses) with directly-labeled ellipses.
+
+(ref:iris-scatter-dens) Sepal width versus sepal length for three different iris species, with marginal density estimates of each variable for each species.
+
+```{r iris-scatter-dens, fig.width = 5*6/4.2, fig.asp=0.85, fig.cap = '(ref:iris-scatter-dens)'}
+# compute densities for sepal lengths
+iris_dens2 <- group_by(iris, Species) %>%
+  do(ggplot2:::compute_density(.$Sepal.Width, NULL)) %>%
+  rename(Sepal.Width = x)
+dens_limit <- max(iris_dens$density, iris_dens2$density) * 1.05 # upper limit of density curves
+# we need different hjust and nudge values here
+iris_max <- 
+  iris_max %>%
+  mutate(
+    hjust = c(1, 0.4, 0),
+    vjust = c(1, 0, 1),
+    nudge_x = c(-0.18, 0, 0.47),
+    nudge_y = c(-0.01, 0.06, 0.03),
+    label = paste0("Iris ", Species)
+  )
+xdens <- axis_canvas(iris_scatter2, axis = "x") +
+  geom_density_line(
+    data=iris_dens,
+    aes(x = Sepal.Length, y = density, fill = Species, color = Species),
+    stat = "identity", size = .2
+  ) +
+  geom_text(
+    data = iris_max,
+    aes(
+      label = label, hjust = hjust, vjust = vjust, color = Species,
+      x = Sepal.Length + nudge_x, 
+      y = density + nudge_y
+    ),
+    family = dviz_font_family, 
+    ize = 12/.pt, 
+    #color = "black", inherit.aes = FALSE,
+    fontface = "italic"
+  ) +
+  scale_color_manual(
+    values = darken(c("#56B4E9", "#E69F00", "#009E73"), 0.3),
+    breaks = c("virginica", "versicolor", "setosa"),
+    guide = "none"
+  ) +
+  scale_fill_manual(
+    values = c("#56B4E950", "#E69F0050", "#009E7350"),
+    breaks = c("virginica", "versicolor", "setosa"),
+    guide = "none"
+  ) +
+  scale_y_continuous(limits = c(0, dens_limit), expand = c(0, 0))
+ydens <- axis_canvas(iris_scatter2, axis = "y", coord_flip = TRUE) +
+  geom_density_line(
+    data = iris_dens2,
+    aes(x = Sepal.Width, y = density, fill = Species, color = Species),
+    stat = "identity", size = .2
+  )  +
+  scale_color_manual(
+    values = darken(c("#56B4E9", "#E69F00", "#009E73"), 0.3),
+    breaks = c("virginica", "versicolor", "setosa"),
+    guide = "none"
+  ) +
+  scale_fill_manual(
+    values = c("#56B4E950", "#E69F0050", "#009E7350"),
+    breaks = c("virginica", "versicolor", "setosa"),
+    guide = "none"
+  ) +
+  scale_y_continuous(limits = c(0, dens_limit), expand = c(0, 0)) +
+  coord_flip()
+p1 <- insert_xaxis_grob(
+  iris_scatter2 + theme(legend.position = "none"),
+  xdens,
+  grid::unit(3*14, "pt"), position = "top"
+)
+p2 <- insert_yaxis_grob(p1, ydens, grid::unit(3*14, "pt"), position = "right")
+ggdraw(p2)
+```
+
+And finally, whenever we encode a single variable in multiple aesthetics, we don't normally want multiple separate legends for the different aesthetics. Instead, there should be only a single legend-like visual element that conveys all mappings at once. In the case where we map the same variable onto a position along a major axis and onto color, this implies that the reference color bar should run along and be integrated into the same axis. Figure \@ref(fig:temp-ridgeline-colorbar) shows a case where we map temperature to both a position along the *x* axis and onto color, and where we therefore have integrated the color legend into the *x* axis.
+
+(ref:temp-ridgeline-colorbar) Temperatures in Lincoln, Nebraska, in 2016. This figure is a variation of Figure \@ref(fig:temp-ridgeline). Temperature is now shown both by location along the *x* axis and by color, and a color bar along the *x* axis visualizes the scale that converts temperatures into colors.
+
+```{r temp-ridgeline-colorbar, fig.asp = 0.652, fig.cap = '(ref:temp-ridgeline-colorbar)'}
+bandwidth <- 3.4
+lincoln_base <- ggplot(lincoln_weather, aes(x = `Mean Temperature [F]`, y = `Month`, fill = ..x..)) +
+  geom_density_ridges_gradient(
+    scale = 3, rel_min_height = 0.01, bandwidth = bandwidth,
+    color = "black", size = 0.25
+  ) +
+  scale_x_continuous(
+    name = "mean temperature (°F)",
+    expand = c(0, 0), breaks = c(0, 25, 50, 75), labels = NULL
+  ) +
+  scale_y_discrete(name = NULL, expand = c(0, .2, 0, 2.6)) +
+  scale_fill_continuous_sequential(
+    palette = "Heat",
+    l1 = 20, l2 = 100, c2 = 0,
+    rev = FALSE
+  ) +
+  guides(fill = "none") +
+  theme_dviz_grid() +
+  theme(
+    axis.text.y = element_text(vjust = 0),
+    plot.margin = margin(3, 7, 3, 1.5)
+  )
+# x axis labels
+temps <- data.frame(temp = c(0, 25, 50, 75))
+# calculate corrected color ranges
+# stat_joy uses the +/- 3*bandwidth calculation internally
+tmin <- min(lincoln_weather$`Mean Temperature [F]`) - 3*bandwidth
+tmax <- max(lincoln_weather$`Mean Temperature [F]`) + 3*bandwidth
+xax <- axis_canvas(lincoln_base, axis = "x", ylim = c(0, 2)) +
+  geom_ridgeline_gradient(
+    data = data.frame(temp = seq(tmin, tmax, length.out = 100)),
+    aes(x = temp, y = 1.1, height = .9, fill = temp),
+    color = "transparent"
+  ) +
+  geom_text(
+    data = temps, aes(x = temp, label = temp),
+    color = "black", family = dviz_font_family,
+    y = 0.9, hjust = 0.5, vjust = 1, size = 14/.pt
+  ) +
+  scale_fill_continuous_sequential(
+    palette = "Heat",
+    l1 = 20, l2 = 100, c2 = 0,
+    rev = FALSE
+  )
+lincoln_final <- insert_xaxis_grob(lincoln_base, xax, position = "bottom", height = unit(0.1, "null"))
+ggdraw(lincoln_final)
+```
+
+### Multi-panel figures
+
+(ref:athletes-composite-inconsistent) Physiology and body-composition of male and female athletes. (a) The data set encompasses 73 female and 85 male professional athletes. (b) Male athletes tend to have higher red blood cell (RBC, reported in units of $10^{12}$ per liter) counts than female athletes, but there are no such differences for white blood cell counts (WBC, reported in units of $10^{9}$ per liter). (c) Male athletes tend to have a lower body fat percentage than female athletes performing in the same sport. Data source: @Telford-Cunningham-1991
+
+```{r athletes-composite-inconsistent, fig.width = 5*6/4.2, fig.asp = 0.75, fig.cap = '(ref:athletes-composite-inconsistent)'}
+male_sport <- unique(filter(Aus_athletes, sex=="m")$sport)
+female_sport <- unique(filter(Aus_athletes, sex=="f")$sport)
+both_sport <- male_sport[male_sport %in% female_sport]
+athletes_df <- filter(Aus_athletes, sport %in% both_sport) %>%
+  mutate(
+    sport = case_when(
+      sport == "track (400m)" ~ "track",
+      sport == "track (sprint)" ~ "track",
+      TRUE ~ sport
+    ),
+    sex = factor(sex, levels = c("f", "m"))
+  )
+p1 <- ggplot(athletes_df, aes(x = sex)) + 
+  geom_bar(fill = "#56B4E9E0") +
+  scale_y_continuous(limits = c(0, 95), expand = c(0, 0), name = "number") +
+  scale_x_discrete(name = NULL, labels = c("female", "male")) +
+  theme_dviz_hgrid(12, rel_small = 1) + 
+  theme(
+    axis.ticks.x = element_blank(),
+    #axis.ticks.length = grid::unit(0, "pt"),
+    plot.margin = margin(3, 0, 0, 0)
+  )
+p2 <- ggplot(athletes_df, aes(x = rcc, y = wcc, shape = sex, color = sex, fill = sex)) + 
+  geom_point(size = 2.5) +
+  scale_x_continuous(limits = c(3.8, 6.75), name = NULL) +
+  scale_y_continuous(limits = c(2.2, 11.), expand = c(0, 0), name = "WBC count") +
+  scale_shape_manual(
+    values = c(21, 22),
+    labels = c("female   ", "male"), name = NULL,
+    guide = guide_legend(direction = "horizontal")
+  ) +
+  scale_color_manual(
+    values = c("#CC79A7", "#56B4E9"), name = NULL,
+    labels = c("female   ", "male"),
+    guide = guide_legend(direction = "horizontal")
+  ) +
+  scale_fill_manual(
+    values = c("#CC79A780", "#56B4E980"), name = NULL,
+    labels = c("female   ", "male"),
+    guide = guide_legend(direction = "horizontal")
+  ) +
+  theme_dviz_hgrid(12, rel_small = 1) +
+  theme(
+    legend.position = c(1, .1),
+    legend.justification = "right",
+    legend.box.background = element_rect(fill = "white", color = "white"),
+    plot.margin = margin(3, 0, 0, 0)
+  )
+p_row <- plot_grid(
+  p1, NULL, p2, 
+  labels = c("a", "", "b"),
+  align = 'h',
+  nrow = 1,
+  rel_widths = c(0.7, 0.02, 1)
+) +
+  draw_text(
+    "RBC count", x = 1, y = 0.01, size = 12, hjust = 1, vjust = 0,
+    family = dviz_font_family
+  )
+p3 <- ggplot(
+  athletes_df,
+  aes(
+    x = sport, y = pcBfat, color = fct_relevel(sex, "m"),
+    fill = fct_relevel(sex, "m")
+  )
+) + 
+  geom_boxplot(width = 0.5) +
+  scale_color_manual(
+    values = c("#009E73", "#56B4E9"), name = NULL,
+    labels = c("male", "female")
+  ) +
+  scale_fill_manual(
+    values = c("#009E7340", "#56B4E940"), name = NULL,
+    labels = c("male", "female")
+  ) +
+  scale_x_discrete(name = NULL) +
+  scale_y_continuous(name = "% body fat") +
+  theme_dviz_hgrid(12, rel_small = 1) +
+  theme(
+    axis.line.x = element_blank(),
+    axis.ticks.x = element_blank()
+    #axis.ticks.length = grid::unit(0, "pt")
+  )
+stamp_bad(
+  plot_grid(
+    p_row, NULL, p3, 
+    ncol = 1,
+    rel_heights = c(1, .04, 1),
+    labels = c("", "", "c")
+  ) +
+  theme(plot.margin = margin(6, 6, 3, 1.5))
+)
+```
+
+(ref:athletes-composite-good) Physiology and body-composition of male and female athletes. This figure shows the exact same data as Figure \@ref(fig:athletes-composite-inconsistent), but now using a consistent visual language. Data for female athletes is always shown to the left of the corresponding data for male athletes, and genders are consistently color-coded throughout all elements of the figure. Data source: @Telford-Cunningham-1991
+
+```{r athletes-composite-good, fig.width = 5*6/4.2, fig.asp = 0.75, fig.cap = '(ref:athletes-composite-good)'}
+p1 <- ggplot(athletes_df, aes(x = sex, fill = sex)) + 
+  geom_bar() +
+  scale_y_continuous(limits = c(0, 95), expand = c(0, 0), name = "number") +
+  scale_x_discrete(name = NULL, labels = c("female", "male")) +
+  scale_fill_manual(values = c("#D55E00D0", "#0072B2D0"), guide = "none") +
+  theme_dviz_hgrid(12, rel_small = 1) + 
+  theme(
+    #axis.line.x = element_blank(),
+    axis.ticks.x = element_blank(),
+    #axis.ticks.length = grid::unit(0, "pt"),
+    plot.margin = margin(3, 0, 0, 0)
+  )
+p2 <- ggplot(athletes_df, aes(x = rcc, y = wcc, fill = sex)) + 
+  geom_point(pch = 21, color = "white", size = 2.5) +
+  scale_x_continuous(limits = c(3.8, 6.75), name = NULL) +
+  scale_y_continuous(limits = c(2.2, 11.), expand = c(0, 0), name = "WBC count") +
+  scale_fill_manual(values = c("#D55E00D0", "#0072B2D0"), guide = "none") +
+  theme_dviz_hgrid(12, rel_small = 1) +
+  theme(plot.margin = margin(3, 0, 0, 0))
+p_row <- plot_grid(
+  p1, NULL, p2,
+  labels = c("a", "", "b"),
+  align = 'h', 
+  nrow = 1,
+  rel_widths = c(0.7, 0.02, 1)
+) +
+  draw_text(
+    "RBC count", x = 1, y = 0.01, size = 12, hjust = 1, vjust = 0,
+    family = dviz_font_family
+  )
+GeomBP <- GeomBoxplot
+GeomBP$draw_key <- draw_key_polygon
+p3 <- ggplot(athletes_df, aes(x = sport, y = pcBfat, color = sex, fill = sex)) + 
+  stat_boxplot(width = 0.5, geom = GeomBP) +
+  scale_color_manual(
+    values = c("#D55E00", "#0072B2"), name = NULL,
+    labels = c("female   ", "male")) +
+  scale_fill_manual(values = c("#D55E0040", "#0072B240"), guide = "none") +
+  scale_x_discrete(name = NULL) +
+  scale_y_continuous(name = "% body fat") +
+  guides(color = guide_legend(
+    override.aes = list(
+      fill = c("#D55E00D0", "#0072B2D0"),
+      color = "white", size = 2
+    ),
+    direction = "horizontal")
+  ) +
+  theme_dviz_hgrid(12, rel_small = 1) +
+  theme(
+    axis.line.x = element_blank(),
+    axis.ticks.x = element_blank(),
+    #axis.ticks.length = grid::unit(0, "pt"),
+    legend.position = c(1., .96),
+    legend.justification = "right"
+  )
+plot_grid(
+  p_row, NULL, p3,
+  ncol = 1,
+  rel_heights = c(1, .04, 1),
+  labels = c("", "", "c")
+) +
+  theme(plot.margin = margin(6, 6, 3, 1.5))
+```
+
+Finally, we need to pay attention to the alignment of individual figure panels in a compound figure. The axes and other graphical elements of the individual panels should all be aligned to each other. Getting the alignment right can be quite tricky, in particular if individual panels are prepared separately, possibly by different people and/or in different programs, and then pasted together in an image manipulation program. To draw your attention to such alignment issues, Figure \@ref(fig:athletes-composite-misaligned) shows a variation of Figure \@ref(fig:athletes-composite-good) where now all figure elements are slightly out of alignment. I have added axis lines to all panels of Figure \@ref(fig:athletes-composite-misaligned) to emphasize these alignment problems. Notice how no axis line is aligned with any other axis line for any other panel of the figure.
+
+(ref:athletes-composite-misaligned) Variation of Figure \@ref(fig:athletes-composite-good) where all figure panels are slightly misaligned. Misalignments are ugly and should be avoided.
+
+```{r athletes-composite-misaligned, fig.width = 5*6/4.2, fig.asp = 0.75, fig.cap = '(ref:athletes-composite-misaligned)'}
+p1 <- ggplot(athletes_df, aes(x = sex, fill = sex)) + 
+  geom_bar() +
+  scale_y_continuous(limits = c(0, 95), expand = c(0, 0), name = "number") +
+  scale_x_discrete(name = NULL, labels = c("female", "male")) +
+  scale_fill_manual(values = c("#D55E00D0", "#0072B2D0"), guide = "none") +
+  theme_dviz_open(12, rel_small = 1) +
+  background_grid(major = "y") +
+  theme(
+    #axis.line.x = element_blank(),
+    #axis.ticks.x = element_blank(),
+    #axis.ticks.length = grid::unit(0, "pt"),
+    plot.margin = margin(3, 6, 6, 0)
+  )
+p2 <- ggplot(athletes_df, aes(x = rcc, y = wcc, fill = sex)) + 
+  geom_point(pch = 21, color = "white", size = 2.5) +
+  scale_x_continuous(limits = c(3.8, 6.75), name = "RBC count") +
+  scale_y_continuous(limits = c(2.2, 11.), expand = c(0, 0), name = "WBC count") +
+  scale_fill_manual(values = c("#D55E00D0", "#0072B2D0"), guide = "none") +
+  theme_dviz_open(12, rel_small = 1) +
+  background_grid(major = "y") +
+  theme(plot.margin = margin(3, 18, 0, 0))
+p_row <- plot_grid(
+  NULL, p1, p2, labels = c("", "a", "b"), nrow = 1,
+  rel_widths = c(0.03, 0.7, 1)
+)
+GeomBP <- GeomBoxplot
+GeomBP$draw_key <- draw_key_polygon
+p3 <- ggplot(athletes_df, aes(x = sport, y = pcBfat, color = sex, fill = sex)) + 
+  stat_boxplot(width = 0.5, geom = GeomBP) +
+  scale_color_manual(
+    values = c("#D55E00", "#0072B2"), name = NULL,
+    labels = c("female   ", "male")
+  ) +
+  scale_fill_manual(values = c("#D55E0040", "#0072B240"), guide = "none") +
+  scale_x_discrete(name = NULL) +
+  scale_y_continuous(name = "% body fat") +
+  guides(color = guide_legend(
+    override.aes = list(
+      fill = c("#D55E00D0", "#0072B2D0"),
+      color = "white", size = 2
+    ),
+    direction = "horizontal")
+  ) +
+  theme_dviz_open(12, rel_small = 1) +
+  background_grid(major = "y") +
+  theme(
+    #axis.line.x = element_blank(),
+    #axis.ticks.x = element_blank(),
+    #axis.ticks.length = grid::unit(0, "pt"),
+    legend.position = c(1., 0.95),
+    legend.justification = "right"
+  )
+stamp_ugly(
+  plot_grid(
+    p_row, p3, ncol = 1, labels = c("", "c")
+  ) +
+  theme(plot.margin = margin(6, 6, 0, 1.5))
+)
+```
+
+### Titles and Captions
+
+(ref:corruption-development) Corruption and human development: The most developed countries experience the least corruption. This figure was inspired by a posting in @Economist-corruption. Data sources: Transparency International & UN Human Development Report
+
+```{r corruption-development, fig.width = 5*6/4.2, fig.asp = 0.7, fig.cap = '(ref:corruption-development)'}
+country_highlight <- c("Germany", "Norway", "United States", "Greece", "Singapore", "Rwanda", "Russia", "Venezuela", "Sudan", "Iraq", "Ghana", "Niger", "Chad", "Kuwait", "Qatar", "Myanmar", "Nepal", "Chile", "Argentina", "Japan", "China")
+corruption %>% filter(year == 2015) %>% na.omit() %>%
+  mutate(region = case_when(
+    region == "Middle East and North Africa" ~ "Middle East\nand North Africa",
+    region == "Europe and Central Asia" ~ "Europe and\nCentral Asia",
+    region == "Sub Saharan Africa" ~ "Sub-Saharan\nAfrica",
+    TRUE ~ region),
+    label = ifelse(country %in% country_highlight, country, "")
+    ) %>%
+  ggplot(aes(cpi, hdi)) + 
+    geom_smooth(
+      aes(color = "y ~ log(x)", fill = "y ~ log(x)"),
+      method = 'lm', formula = y~log(x), se = FALSE, fullrange = TRUE
+    ) +
+    geom_point(
+      aes(color = region, fill = region),
+      size = 2.5, alpha = 0.5, shape = 21
+    ) + 
+    geom_text_repel(
+      aes(label = label), color = "black", size = 10/.pt,
+      point.padding = 0.1, box.padding = .6, force = 1.,
+      min.segment.length = 0, seed = 7654,
+      family = dviz_font_family
+    ) +
+    scale_color_OkabeIto(name = NULL, order = c(1:5, 8), darken = 0.3) +
+    scale_fill_OkabeIto(name = NULL, order = c(1:5, 8)) +
+    scale_y_continuous(
+      limits = c(0.3, 1.05), breaks = c(0.2, 0.4, 0.6, 0.8, 1.0),
+      expand = c(0, 0),
+      name = "Human Development Index, 2015\n(1.0 = most developed)"
+    ) +
+    scale_x_continuous(
+      limits = c(10, 95),
+      breaks = c(20, 40, 60, 80, 100),
+      expand = c(0, 0),
+      name = "Corruption Perceptions Index, 2015 (100 = least corrupt)"
+    ) +
+    guides(
+      color = guide_legend(
+        nrow = 1,
+        override.aes = list(
+          linetype = c(rep("blank", 5), "solid"),
+          shape = c(rep(21, 5), NA)
+        )
+      )
+    ) +
+    theme_dviz_hgrid(12, rel_small = 1) +
+    theme(
+      legend.position = "top",
+      legend.justification = "right",
+      legend.text = element_text(size = 10),
+      legend.box.spacing = unit(0, "pt")
+    ) -> plot_corrupt_base
+## for some reason grid::forceGrob creates an empty plot, not sure why
+#cur_dev <- grDevices::dev.cur()
+#cowplot::png_null_device(width = 7, height = 4.9)
+#null_dev <- dev.cur()
+#grob_corrupt_base <- grid::forceGrob(ggplotGrob(plot_corrupt_base))
+#null <- grDevices::dev.off(null_dev)
+#if (cur_dev > 1 ) null <- grDevices::dev.set(cur_dev)
+ggdraw(plot_corrupt_base)
+```
+
+
+(ref:blue-jays-scatter-bubbles2) Head length versus body mass for 123 blue jays. The birds' sex is indicated by color, and the birds' skull size by symbol size. Head-length measurements include the length of the bill while skull-size measurements do not. Data source: Keith Tarvin, Oberlin College
+
+```{r blue-jays-scatter-bubbles2, fig.asp = 3/4, fig.cap='(ref:blue-jays-scatter-bubbles2)'}
+blue_jays$sex <- ifelse(blue_jays$KnownSex == "F", "female birds", "male birds")
+blue_jays$sex <- factor(blue_jays$sex, levels = c("male birds", "female birds"))
+ggplot(blue_jays, aes(Mass, Head, size = Skull, fill = KnownSex)) + 
+  geom_point(pch = 21, color = "white") +
+  scale_x_continuous(name = "body mass (g)") +
+  scale_y_continuous(name = "head length (mm)", breaks = c(52, 54, 56, 58, 60)) +
+  scale_fill_manual(
+    values = c(F = "#D55E00", M = "#0072B2"),
+    labels = c("female   ", "male"),
+    name = "sex",
+    guide = guide_legend(
+      direction = "horizontal",
+      title.position = "top",
+      title.hjust = 0.5,
+      label.position = "right",
+      keyheight = grid::unit(19, "pt"),
+      order = 1,
+      override.aes = list(size = 4)
+    )
+  ) +
+  scale_radius(
+    name = "skull size (mm)",
+    range = c(2, 7),
+    limits = c(28, 34),
+    breaks = c(28, 30, 32, 34),
+    labels = c("28   ", "30   ", "32   ", "34"),
+    guide = guide_legend(
+      direction = "horizontal",
+      title.position = "top",
+      title.hjust = 0.5,
+      label.position = "right",
+      order = 2,
+      override.aes = list(fill = "gray40")
+    )
+  ) +
+  theme_dviz_grid() +
+  theme(
+    legend.margin = margin(0, 0, 0, 20),
+    legend.position = "top",
+    legend.box = "horizontal",
+    legend.box.spacing = grid::unit(0, "pt"),
+    legend.justification = c(1, 0),
+    legend.spacing.x = unit(2, "pt"),
+    legend.spacing.y = unit(2, "pt"),
+    legend.background = element_rect(fill = "white", color = NA),
+    legend.key.width = unit(10, "pt")
+  )
+```
+
+(ref:tech-stocks-minimal-labeling) Stock price over time for four major tech companies. The stock price for each company has been normalized to equal 100 in June 2012. This figure is a slightly modified version of Figure \@ref(fig:tech-stocks-good-legend) in Chapter \@ref(redundant-coding). Here, the *x* axis representing time does not have a title. It is clear from the context that the numbers 2013, 2014, etc. refer to years.
+
+```{r tech-stocks-minimal-labeling, fig.cap = '(ref:tech-stocks-minimal-labeling)'}
+price_plot_base <- ggplot(ungroup(tech_stocks), aes(x = date, y = price_indexed, color = ticker)) +
+  geom_line(na.rm = TRUE) +
+  scale_color_manual(
+    values = c("#000000", "#E69F00", "#56B4E9", "#009E73"),
+    name = "",
+    breaks = c("FB", "GOOG", "MSFT", "AAPL"),
+    labels = c("Facebook", "Alphabet", "Microsoft", "Apple")
+  ) +
+  scale_x_date(
+    limits = c(ymd("2012-06-01"), ymd("2017-05-31")),
+    expand = c(0,0)
+  ) + 
+  scale_y_continuous(
+    limits = c(0, 560),
+    expand = c(0,0)
+  ) +
+  theme_dviz_hgrid() + 
+  theme(plot.margin = margin(3, 7, 3, 1.5))
+price_plot_base + xlab(NULL) + ylab("stock price, indexed")
+```
+
+(ref:tech-stocks-minimal-labeling-bad) Stock price over time for four major tech companies. The stock price for each company has been normalized to equal 100 in June 2012. This variant of Figure \@ref(fig:tech-stocks-minimal-labeling) has been labeled as "bad" because the *y* axis now does not have a title either, and what the values shown along the *y* axis represent is not immediately obvious from the context.
+
+```{r tech-stocks-minimal-labeling-bad, fig.cap = '(ref:tech-stocks-minimal-labeling-bad)'}
+stamp_bad(
+  price_plot_base + xlab(NULL) + ylab(NULL)
+)
+```
+
+(ref:tech-stocks-labeling-ugly) Stock price over time for four major tech companies. The stock price for each company has been normalized to equal 100 in June 2012. This variant of Figure \@ref(fig:tech-stocks-minimal-labeling) has been labeled as "ugly" because it is labeled excessively. In particular, providing a unit ("years AD") for the values along the *x* axis is awkward.
+
+```{r tech-stocks-labeling-ugly, fig.cap = '(ref:tech-stocks-labeling-ugly)'}
+stamp_ugly(
+  price_plot_base + xlab("time (years AD)") + ylab("stock price, indexed\n(100/share price on Jun 1, 2012)") +
+    scale_color_manual(
+      values = c("#000000", "#E69F00", "#56B4E9", "#009E73"),
+      name = "company",
+      breaks = c("FB", "GOOG", "MSFT", "AAPL"),
+      labels = c("Facebook", "Alphabet", "Microsoft", "Apple")
+    ) +
+    theme(legend.title.align = 0.5)
+)
+```
+
+### Balancee data with context
+
+(ref:Aus-athletes-grid-bad) Percent body fat versus height in professional male Australian athletes. Each point represents one athlete. This figure devotes way too much ink to non-data. There are unnecessary frames around the entire figure, around the plot panel, and around the legend. The coordinate grid is very prominent, and its presence draws attention away from the data points. Data source: @Telford-Cunningham-1991
+
+```{r Aus-athletes-grid-bad, fig.cap='(ref:Aus-athletes-grid-bad)'}
+male_Aus <- filter(Aus_athletes, sex=="m") %>%
+    filter(sport %in% c("basketball", "field", "swimming", "track (400m)",
+                        "track (sprint)", "water polo")) %>%
+    mutate(sport = case_when(sport == "track (400m)" ~ "track",
+                             sport == "track (sprint)" ~ "track",
+                             TRUE ~ sport))
+male_Aus$sport <- factor(male_Aus$sport,
+                         levels = c("field", "water polo", "basketball", "swimming", "track"))
+p_Aus_base <- ggplot(male_Aus, aes(x=height, y=pcBfat, color=sport, fill=sport, shape=sport)) +
+  geom_point(size = 2.5) +
+  scale_shape_manual(values = 21:25) +
+  scale_color_OkabeIto(order=c(2, 1, 3, 4, 5), darken = 0.3) +
+  scale_fill_OkabeIto(order=c(2, 1, 3, 4, 5), darken = 0.1, alpha = 0.7) +
+  scale_x_continuous(limits = c(169, 210), name = "height (cm)") +
+  scale_y_continuous(limits = c(5, 20), name = "% body fat")
+p <- p_Aus_base +
+  theme_dviz_open() +
+  theme(
+    axis.line = element_blank(),
+    panel.grid.major = element_line(color = "black", size = 0.3),
+    panel.grid.minor = element_line(color = "black", size = 0.15),
+    panel.border = element_rect(color = "black", size = 1),
+    legend.background = element_rect(color = "black", size = 0.5),
+    legend.margin = margin(7, 7, 7, 7),
+    plot.background = element_rect(color = "black", size = 1),
+    plot.margin = margin(7, 7, 7, 7)
+  )
+# width: 6 in = 433.62pt
+# height: 0.618 * 6 in = 3.71 in = 268.12
+stamp_ugly(ggdraw() + draw_plot(p, x = 1/434, y = 1/268, width = 426/434, height = 252/268))
+```
+
+(ref:Aus-athletes-grid-good) Percent body fat versus height in professional male Australian athletes. This figure is a cleaned-up version of Figure \@ref(fig:Aus-athletes-grid-bad). Unnecessary frames have been removed, minor grid lines have been removed, and major grid lines have been drawn in light gray to stand back relative to the data points. Data source: @Telford-Cunningham-1991
+
+```{r Aus-athletes-grid-good, fig.cap='(ref:Aus-athletes-grid-good)'}
+p_Aus_base + 
+  theme_dviz_grid()# + panel_border(colour = "grey70") + theme(axis.ticks = element_line(colour = "grey70"))
+```
+
+At the other extreme, we might end up with a figure such as Figure \@ref(fig:Aus-athletes-min-bad), which is a minimalist version of Figure \@ref(fig:Aus-athletes-grid-good). In this figure, the axis tick labels and titles have been made so faint that they are hard to see. If we just glance at the figure we will not immediately perceive what data is actually shown. We only see points floating in space. Moreover, the legend annotations are so faint that the points in the legend could be mistaken for data points. This effect is amplified because there is no clear visual separation between the plot area and the legend. Notice how the background grid in Figure \@ref(fig:Aus-athletes-grid-good) both anchors the points in space and sets off the data area from the legend area. Both of these effects have been lost in Figure \@ref(fig:Aus-athletes-min-bad).
+
+(ref:Aus-athletes-min-bad) Percent body fat versus height in professional male Australian athletes. In this example, the concept of removing non-data ink has been taken too far. The axis tick labels and title are too faint and are barely visible. The data points seem to float in space. The points in the legend are not sufficiently set off from the data points, and the casual observer might think they are part of the data. Data source: @Telford-Cunningham-1991
+
+```{r Aus-athletes-min-bad, fig.cap='(ref:Aus-athletes-min-bad)'}
+axis_col <- "grey70"
+title_col <- "grey70"
+p <- p_Aus_base + theme_dviz_open(11) +
+  theme(
+    axis.line = element_blank(),
+    axis.ticks = element_line(color = axis_col),
+    axis.text = element_text(color = axis_col),
+    axis.title = element_text(color = title_col),
+    legend.text = element_text(color = title_col),
+    legend.title = element_text(color = title_col),
+    plot.margin = margin(3.5, 7, 3.5, 1.5)
+  )
+stamp_ugly(p)
+```
+
+(ref:Aus-athletes-grid-good-frame) Percent body fat versus height in professional male Australian athletes. This figure adds a frame around the plot panel of Figure \@ref(fig:Aus-athletes-grid-good), and this frame helps separate the legend from the data. Data source: @Telford-Cunningham-1991
+
+```{r Aus-athletes-grid-good-frame, fig.cap='(ref:Aus-athletes-grid-good-frame)'}
+p_Aus_base + 
+  theme_dviz_grid() + panel_border(colour = "grey70") + theme(axis.ticks = element_line(colour = "grey70"))
+```
+
+### Backgrounds
+
+(ref:price-plot-ggplot-default) Stock price over time for four major tech companies. The stock price for each company has been normalized to equal 100 in June 2012. This figure mimics the ggplot2 default look, with white major and minor grid lines on a gray background. In this particular example, I think the grid lines overpower the data lines, and the result is a figure that is not well balanced and that doesn't place sufficient emphasis on the data. Data source: Yahoo Finance
+
+```{r price-plot-ggplot-default, fig.cap='(ref:price-plot-ggplot-default)'}
+price_plot <- ggplot(ungroup(tech_stocks), aes(x=date, y=price_indexed, color=ticker)) +
+  geom_line(size = 0.66, na.rm = TRUE) +
+  scale_color_manual(
+    values = c("#000000", "#E69F00", "#56B4E9", "#009E73"),
+    name = NULL,
+    breaks = c("FB", "GOOG", "MSFT", "AAPL"),
+    labels = c("Facebook", "Alphabet", "Microsoft", "Apple")
+  ) +
+  scale_x_date(
+    name="year",
+    limits=c(ymd("2012-06-01"), ymd("2017-05-31")),
+    expand=c(0,0)
+  ) + 
+  scale_y_continuous(
+    name = "stock price, indexed",
+    limits = c(0, 560),
+    expand = c(0,0)
+  ) +
+  theme_dviz_grid() +
+  theme(
+    panel.background = element_rect(fill = "grey90"),
+    panel.grid.major = element_line(color = "white"),
+    panel.grid.minor = element_line(color = "white", size = rel(0.5)),
+    legend.key = element_rect(fill = "grey90", color = "white"),
+    axis.ticks = element_line(color = "black"),
+    plot.margin = margin(7, 7, 3, 1.5)
+  )
+stamp_ugly(price_plot)
+```
+
+(ref:price-plot-no-grid) Indexed stock price over time for four major tech companies. In this variant of Figure \@ref(fig:price-plot-ggplot-default), the data lines are not sufficiently anchored. This makes it difficult to ascertain to what extent they have deviated from the index value of 100 at the end of the covered time interval. Data source: Yahoo Finance
+
+```{r price-plot-no-grid, fig.cap='(ref:price-plot-no-grid)'}
+stamp_bad(
+  price_plot + 
+    theme_dviz_open() +
+    theme(plot.margin = margin(7, 7, 3, 1.5))
+)
+```
+
+At the absolute minimum, we need to add one horizontal reference line. Since the stock prices in Figure \@ref(fig:price-plot-no-grid) indexed to 100 in June 2012, marking this value with a thin horizontal line at *y* = 100 helps a lot (Figure \@ref(fig:price-plot-refline)). Alternatively, we can use a minimal "grid" of horizontal lines. For a plot where we are primarily interested in the change in *y* values, vertical grid lines are not needed. Moreover, grid lines positioned at only the major axis ticks will often be sufficient. And, the axis line can be omitted or made very thin, since the horizontal lines clearly mark the extent of the plot (Figure \@ref(fig:price-plot-hgrid)).
+
+(ref:price-plot-refline) Indexed stock price over time for four major tech companies. Adding a thin horizontal line at the index value of 100 to Figure \@ref(fig:price-plot-no-grid) helps provide an important reference throughout the entire time period the plot spans. Data source: Yahoo Finance
+
+```{r price-plot-refline, fig.cap='(ref:price-plot-refline)'}
+price_plot2 <- ggplot(ungroup(tech_stocks), aes(x=date, y=price_indexed, color=ticker)) +
+  geom_hline(yintercept = 100, size = 0.5, color="grey70") +
+  geom_line(size = 0.66, na.rm = TRUE) +
+  scale_color_manual(
+    values = c("#000000", "#E69F00", "#56B4E9", "#009E73"),
+    name = NULL,
+    breaks = c("FB", "GOOG", "MSFT", "AAPL"),
+    labels = c("Facebook", "Alphabet", "Microsoft", "Apple")
+  ) +
+  scale_x_date(
+    name = "year",
+    limits = c(ymd("2012-06-01"), ymd("2017-05-31")),
+    expand = c(0,0)
+  ) + 
+  scale_y_continuous(
+    name = "stock price, indexed",
+    limits = c(0, 560),
+    expand = c(0,0)
+  ) +
+  theme_dviz_open() +
+  theme(plot.margin = margin(7, 7, 3, 1.5))
+price_plot2
+```
+
+
+(ref:price-plot-hgrid) Indexed stock price over time for four major tech companies. Adding thin  horizontal lines at all major *y* axis ticks provides a better set of reference points than just the one horizontal line of Figure \@ref(fig:price-plot-refline). This design also removes the need for prominent *x* and *y* axis lines, since the evenly spaced horizontal lines create a visual frame for the plot panel. Data source: Yahoo Finance
+
+```{r price-plot-hgrid, fig.cap='(ref:price-plot-hgrid)'}
+price_plot + 
+  theme_dviz_hgrid() +
+  theme(plot.margin = margin(7, 7, 3, 1.5))
+```
+
+For such a minimal grid, we generally draw the lines orthogonally to direction along which the numbers of interest vary. Therefore, if instead of plotting the stock price over time we plot the five-year increase, as horizontal bars, then we will want to use vertical lines instead (Figure \@ref(fig:price-increase)).
+
+(ref:price-increase) Percent increase in stock price from June 2012 to June 2017, for four major tech companies. Because the bars run horizontally, vertical grid lines are appropriate here. Data source: Yahoo Finance
+
+```{r price-increase, fig.cap='(ref:price-increase)'}
+perc_increase <- filter(ungroup(tech_stocks), date == ymd("2017-06-01")) %>%
+  mutate(perc=100*(price-index_price)/index_price,
+         label=paste(as.character(round(perc)), "%", sep="")) %>%
+  arrange(perc)
+perc_increase$ticker <- factor(perc_increase$ticker, levels=perc_increase$ticker)
+perc_plot <- ggplot(perc_increase, aes(x=ticker, y=perc)) +
+  geom_col(fill="#56B4E9") +
+  geom_text(aes(label=label), color="white", hjust=1.1, size=5,
+            family = dviz_font_family) +
+  scale_y_continuous(#name="percent increase\n(June 2012 to June 2017)",
+                     name="percent increase",
+                     limits=c(0, 499),
+                     expand=c(0, 0)) +
+  scale_x_discrete(name = NULL,
+                     breaks = c("FB", "GOOG", "MSFT", "AAPL"),
+                     labels = c("Facebook ", "Alphabet ", "Microsoft ", "Apple ")) +
+  coord_flip(clip = "off") +
+  theme_dviz_vgrid(rel_small = 1) +
+  theme(axis.line.y = element_blank(),
+        axis.ticks = element_blank(),
+        axis.ticks.length = grid::unit(0, "pt"))
+perc_plot
+```
+
+### Use larger axis labels
+
+(ref:Aus-athletes-ugly) Percent body fat versus height in male athletes. This figure is an improvement over Figure \@ref(fig:Aus-athletes-small), but the text elements remain too small and the figure is not balanced. Data source: @Telford-Cunningham-1991
+
+```{r Aus-athletes-ugly, fig.width = 6, fig.cap='(ref:Aus-athletes-ugly)'}
+stamp_ugly(p + geom_point(size = 1.5) +
+             theme_dviz_grid(10) + theme(plot.margin = margin(7, 7, 3, 1.5)))
+```
+
+(ref:Aus-athletes-good) Percent body fat versus height in male athletes. All figure elements are appropriately scaled. Data source: @Telford-Cunningham-1991
+
+```{r Aus-athletes-good, fig.width = 6, fig.cap='(ref:Aus-athletes-good)'}
+p + geom_point(size = 2.25) +
+  theme_dviz_grid() + theme(plot.margin = margin(7, 7, 3, 1.5))
+```
+
+Importantly, we can overdo it and make the labels too big (Figure \@ref(fig:Aus-athletes-big-ugly)). Sometimes we need big labels, for example if the figure is meant to be reduced in size, but the various elements of the figure (in particular, label text and plot symbols) need to fit together. In Figure \@ref(fig:Aus-athletes-big-ugly), the points used to visualize the data are too small relative to the text.  Once we fix this issue, the figure becomes acceptable again (Figure \@ref(fig:Aus-athletes-big-good)).
+
+(ref:Aus-athletes-big-ugly) Percent body fat versus height in male athletes. The text elements are fairly large, and their size may be appropriate if the figure is meant to be reproduced at a very small scale. However, the figure overall is not balanced; the points are too small relative to the text elements. Data source: @Telford-Cunningham-1991
+
+```{r Aus-athletes-big-ugly, fig.width = 6, fig.cap='(ref:Aus-athletes-big-ugly)'}
+stamp_ugly(p + geom_point(size = 2.25) +
+             theme_dviz_grid(19) + theme(plot.margin = margin(7, 7, 3, 1.5)))
+```
+
+
+(ref:Aus-athletes-big-good) Percent body fat versus height in male athletes. All figure elements are sized such that the figure is balanced and can be reproduced at a small scale. Data source: @Telford-Cunningham-1991
+
+```{r Aus-athletes-big-good, fig.width=6, fig.cap='(ref:Aus-athletes-big-good)'}
+p + geom_point(size = 3.5) +
+  theme_dviz_grid(19) + theme(plot.margin = margin(7, 7, 3, 1.5))
+```
+
+You may look at Figure \@ref(fig:Aus-athletes-big-good) and find everything too big. However, keep in mind that it is meant to be scaled down. Scale the figure down so that it is only an inch or two in width, and it looks just fine. In fact, at that scaling this is the only figure in this chapter that looks good.
+
+```{block type='rmdtip', echo=TRUE}
+Always look at scaled-down versions of your figures to make sure the axis labels are appropriately sized.
+```
+
